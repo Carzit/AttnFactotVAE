@@ -3,9 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from typing import Literal
-
-def check(tensor:torch.Tensor):
-    return torch.any(torch.isnan(tensor) | torch.isinf(tensor))
+from utils import check, multiLinear
 
 class Exp(nn.Module):
     def __init__(self, *args, **kwargs) -> None:
@@ -54,8 +52,29 @@ class AttnFeatureExtractor(nn.Module):
         return residual # -> (batch_size, hidden_size)
 
 class AttnRet(nn.Module):
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(self, 
+                 fundamental_feature_size, 
+                 quantity_price_feature_size,
+                 num_gru_layers, 
+                 gru_hidden_size,
+                 gru_drop_out = 0.1,
+                 num_fc_layers = 2) -> None:
+        super().__init__()
+        self.feature_extractor = AttnFeatureExtractor(fundamental_feature_size=fundamental_feature_size,
+                                                      quantity_price_feature_size=quantity_price_feature_size,
+                                                      hidden_size=gru_hidden_size,
+                                                      num_gru_layer=num_gru_layers,
+                                                      gru_dropout=gru_drop_out)
+        self.fc_layers = multiLinear(input_size=gru_hidden_size,
+                                    output_size=1,
+                                    num_layers=num_fc_layers)
+        
+    def forward(self, fundamental_features, quantity_price_features):
+        residual = self.feature_extractor(fundamental_features, quantity_price_features)
+        out = self.fc_layers(residual)
+        out = out.squeeze()
+        return out
+    
 
 class PortfolioLayer(nn.Module):
     """

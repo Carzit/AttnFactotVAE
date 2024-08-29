@@ -13,15 +13,14 @@ class ObjectiveLoss(nn.Module):
     
     where the first loss term is the negative log likelihood, to reduce the reconstruction error of posterior factor model, and y_hat_i = α_i + β_i · z_post is the reconstructed return of i-th stock.The second loss term is the Kullback–Leibler divergence (KLD) between the distribution of prior and posterior factors, for enforcing the prior factors to approximate to the posterior factors, γ is the weight of KLD loss.
     """
-    def __init__(self, 
-                 gamma=1, 
-                 recon_loss_type:Literal["MSE", "NLL"]="MSE") -> None:
+    def __init__(self,
+                 scale=100, 
+                 gamma=0.99, 
+                 ) -> None:
         super().__init__()
+        self.scale = scale
         self.gamma = gamma
-        if recon_loss_type == "MSE":
-            self.recon_loss = MSE_Loss()
-        elif recon_loss_type == "NLL":
-            self.recon_loss = NLL_Loss()
+        self.recon_loss = MSE_Loss(scale=scale)
         self.kl_div_loss = KL_Div_Loss()
 
     def forward(self, 
