@@ -296,4 +296,4 @@ if __name__ == "__main__":
 
 # python data_construct.py --alpha_folder "data\Alpha101" --label_folder "data\label" --save_folder "data\preprocess" --merge_mode "date" --log_folder "log"
 
-# python data_construct.py --quantity_price_factor_folder "C:\Users\C'heng\PycharmProjects\SWHY\data\demo\alpha" --fundamental_factor_folder "C:\Users\C'heng\PycharmProjects\SWHY\data\demo\basic" --label_folder "C:\Users\C'heng\PycharmProjects\SWHY\data\demo\label" --save_folder "preprocess" --log_folder "log"
+# python data_construct.py --quantity_price_factor_folder "D:\PycharmProjects\SWHY\data\Alpha101" --fundamental_factor_folder "D:\PycharmProjects\SWHY\data\Fundamental" --label_folder "D:\PycharmProjects\SWHY\data\label" --save_folder "preprocess_new" --log_folder "log"

@@ -52,6 +52,8 @@ class KL_Div_Loss(nn.Module):
                 sigma_posterior) -> torch.Tensor:
         # kl_divergence between two gaussian distribution:
         # KL(N(x;μ_1, σ_1)||N(x;μ_2, σ_2)) = log（σ_2/σ_1) + (σ_1^2 + (μ_1 - μ_2)^2) / (2·σ_2^2) - 1/2
+        sigma_prior = F.softplus(sigma_prior)
+        sigma_posterior = F.softplus(sigma_posterior)
         return torch.sum(torch.log(sigma_prior / sigma_posterior) + (sigma_posterior**2 + (mu_posterior - mu_prior)**2) / (2 * sigma_prior**2) - 0.5)
 
 class MSE_Loss(nn.MSELoss):

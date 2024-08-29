@@ -4,6 +4,9 @@ import torch.nn.functional as F
 
 from typing import Literal
 
+def check(tensor:torch.Tensor):
+    return torch.any(torch.isnan(tensor) | torch.isinf(tensor))
+
 class Exp(nn.Module):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -19,23 +22,35 @@ class AttnFeatureExtractor(nn.Module):
                  num_gru_layer=1,
                  gru_dropout=0) -> None:
         super().__init__()
-        self.q_layer = nn.Linear(fundamental_feature_size, hidden_size)
-        self.k_layer = nn.Linear(fundamental_feature_size, hidden_size)
-        self.gru = nn.GRU(input_size=quantity_price_feature_size,
+        self.norm_layer1 = nn.LayerNorm(quantity_price_feature_size)
+        self.proj_layer = nn.Sequential(nn.Linear(quantity_price_feature_size, hidden_size), 
+                                        nn.LeakyReLU())
+        self.gru = nn.GRU(input_size=hidden_size,
                           hidden_size=hidden_size,
                           batch_first=False,
                           num_layers=num_gru_layer,
                           dropout=gru_dropout)
+        
+        self.norm_layer2 = nn.LayerNorm(fundamental_feature_size)
+        self.q_layer = nn.Linear(fundamental_feature_size, hidden_size)
+        self.k_layer = nn.Linear(fundamental_feature_size, hidden_size)
         self.v_layer = nn.Linear(hidden_size, hidden_size)
         
     def forward(self, fundamental_features, quantity_price_features):
+        fundamental_features = self.norm_layer2(fundamental_features)
         q = self.q_layer(fundamental_features)
         k = self.k_layer(fundamental_features)
+        #print(f"q: {check(q)}, k: {check(k)}")
+
+        quantity_price_features = self.norm_layer1(quantity_price_features)
+        quantity_price_features = self.proj_layer(quantity_price_features)
         output, hidden_state = self.gru(quantity_price_features)
+        #print(f"o: {check(output)}")
         v = self.v_layer(output[-1]) # -> (batch_size, hidden_size)
         qk = torch.matmul(q, k.T)
         attn = torch.matmul(qk, v)
         residual = attn + v
+        #print(f"residual: {residual}")
         return residual # -> (batch_size, hidden_size)
 
 class AttnRet(nn.Module):
@@ -254,7 +269,7 @@ class DistributionNetwork(nn.Module):
     
     def forward(self, h_multi):#h_multi: [num_factors, hidden_size]
         mu_prior = self.mu_layer(h_multi).squeeze() #->[num_factors]
-        sigma_prior = torch.exp(self.sigma_layer(h_multi).squeeze()) #->[num_factors]
+        sigma_prior = self.sigma_layer(h_multi).squeeze() #->[num_factors]
         return mu_prior, sigma_prior
 
 class FactorPredictor(nn.Module):
@@ -275,6 +290,7 @@ class FactorPredictor(nn.Module):
 
     def forward(self, e):
         h_multi = self.multihead_attention(e)
+        #print(f"h_mul:{check(h_multi), h_multi}")
         mu_prior, sigma_prior = self.distribution_network(h_multi)
         return mu_prior, sigma_prior
     
@@ -314,9 +330,13 @@ class AttnFactorVAE(nn.Module):
                                      std_activ=std_activ)
     def forward(self, fundamental_feature, quantity_price_feature, y):
         e = self.feature_extractor(fundamental_feature, quantity_price_feature)
+        #print(f"e: {e}")
         mu_posterior, sigma_posterior = self.encoder(y, e)
+        #print(f"mu_posterior:{mu_posterior}, sigma_posterior:{sigma_posterior}")
         mu_prior, sigma_prior = self.predictor(e)
+        #print(f"mu_prior:{mu_prior}, sigma_prior:{sigma_prior}")
         y_hat = self.decoder(e, mu_posterior, sigma_posterior)
+        #print(f"y_hat: {y_hat}")
         return y_hat, mu_posterior, sigma_posterior, mu_prior, sigma_prior
     
     def predict(self, fundamental_feature, quantity_price_feature):

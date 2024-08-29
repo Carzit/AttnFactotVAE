@@ -5,6 +5,8 @@ from collections import OrderedDict
 import torch
 import torch.nn as nn
 
+def check(tensor:torch.Tensor):
+    return torch.any(torch.isnan(tensor) | torch.isinf(tensor))
 
 def str2bool(value):
     if isinstance(value, bool):

@@ -18,7 +18,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from dataset import StockDataset, StockSequenceDataset, RandomSampleSampler
 from nets import AttnFactorVAE
 from loss import ObjectiveLoss
-from utils import str2bool
+from utils import str2bool, check
 
 def translate_dtype(dtype:Literal["FP32", "FP64", "FP16", "BF16"]) -> torch.dtype:
     if dtype == "FP32":
@@ -153,6 +153,8 @@ class FactorVAETrainer:
             model.train()
             for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.train_loader)):
                 optimizer.zero_grad() # 梯度归零
+                if fundamental_feature.shape[0] == 0:
+                    continue
 
                 quantity_price_feature = quantity_price_feature.to(device=self.device)
                 fundamental_feature = fundamental_feature.to(device=self.device)
@@ -162,6 +164,13 @@ class FactorVAETrainer:
                                                                                     quantity_price_feature,  
                                                                                     label) # 模型运算
                 train_loss, train_recon_loss, train_kld_loss = loss_func(label, y_hat, mu_prior, sigma_prior, mu_posterior, sigma_posterior) # 损失函数计算
+                if check(train_loss):
+                    print(f"batch: {batch}")
+                    print(check(fundamental_feature), check(quantity_price_feature))
+                    print(f"label: {label}")
+                    print(f"y_hat:{y_hat}")
+                    print(f"loss: {train_recon_loss, train_kld_loss}")
+                    sys.exit()
                 
                 train_loss.backward() # 梯度反向传播
                 optimizer.step() # 优化器更新模型权重
@@ -341,4 +350,4 @@ if __name__ == "__main__":
 
 # python train.py --log_folder "D:\PycharmProjects\SWHY\log\FactorVAE" --log_name "Model8.txt" --dataset_path "D:\PycharmProjects\SWHY\data\preprocess\dataset.pt" --input_size 101 --num_gru_layers 4 --gru_hidden_size 32 --hidden_size 100 --latent_size 48 --gru_dropout 0.1 --std_activation "exp" --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model8" --save_name "model8" --save_format ".pt" --sample_per_batch 50 --num_batches_per_epoch 200
 
-# python train.py --log_folder "log" --log_name "Model8.txt" --dataset_path "dataset.pt" --quantity_price_feature_size 5 --fundamental_feature_size 8 --num_gru_layers 4 --gru_hidden_size 32 --hidden_size 100 --latent_size 48 --gru_dropout 0.1 --std_activation "exp" --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model8" --save_name "model8" --save_format ".pt" --sample_per_batch 50 --num_batches_per_epoch 200
+# python train.py --log_folder "log" --log_name "Model8.txt" --dataset_path "dataset.pt" --quantity_price_feature_size 101 --fundamental_feature_size 31 --num_gru_layers 4 --gru_hidden_size 32 --hidden_size 100 --latent_size 48 --gru_dropout 0.1 --std_activation "exp" --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model8" --save_name "model_attn_1" --save_format ".pt" --sample_per_batch 50 --num_batches_per_epoch 200

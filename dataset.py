@@ -50,10 +50,18 @@ def translate_dtype(dtype:Literal["FP32", "FP64", "FP16", "BF16"]) -> torch.dtyp
         return torch.bfloat16
 
 @torch.no_grad()
-def drop_nan_inf(tensor:torch.Tensor) -> Tuple[torch.Tensor]:
-    mask = ~torch.any(torch.isnan(tensor) | torch.isinf(tensor), dim=[0,2])
-    filtered_tensor = tensor[:,mask,:]
-    return filtered_tensor, mask
+def drop_nan_inf(a:torch.Tensor, b:torch.Tensor, c:torch.Tensor) -> Tuple[torch.Tensor]:
+    a_valid_mask = torch.all(~torch.isnan(a) & ~torch.isinf(a), dim=(0, 2))
+    b_valid_mask = torch.all(~torch.isnan(b) & ~torch.isinf(b), dim=1)
+    c_valid_mask = ~torch.isnan(c) & ~torch.isinf(c)
+    
+    valid_indices = a_valid_mask & b_valid_mask & c_valid_mask
+    
+    a_filtered = a[:, valid_indices, :]
+    b_filtered = b[valid_indices, :]
+    c_filtered = c[valid_indices]
+    
+    return a_filtered, b_filtered, c_filtered
 
 @torch.no_grad()
 def convert_nan_inf(tensor:torch.Tensor) -> torch.Tensor:
@@ -196,9 +204,7 @@ class StockSequenceDataset(Dataset):
             fundamental_feature = convert_nan_inf(fundamental_feature)
             label = convert_nan_inf(label)
         elif self.mode == "drop":
-            quantity_price_feature, mask = drop_nan_inf(quantity_price_feature)
-            fundamental_feature = fundamental_feature[mask, :]
-            label = label[mask]
+            quantity_price_feature, fundamental_feature, label = drop_nan_inf(quantity_price_feature, fundamental_feature, label)
         return quantity_price_feature, fundamental_feature, label
 
 class RandomSampleSampler(Sampler):
@@ -298,7 +304,7 @@ if __name__ == "__main__":
 
 # python dataset.py --x_folder "D:\PycharmProjects\SWHY\data\preprocess\alpha" --y_folder "D:\PycharmProjects\SWHY\data\preprocess\label" --label_name "ret10" --train_seq_len 20 --save_path "D:\PycharmProjects\SWHY\data\preprocess\dataset.pt" --mask_len 10
 
-# python dataset.py --quantity_price_feature_dir "preprocess\quantity_price_feature" --fundamental_feature_dir "preprocess\fundamental_feature" --label_dir "preprocess\label" --label_name "ret10" --train_seq_len 20 --save_path "dataset.pt" --mask_len 10 --mode "drop"
+# python dataset.py --quantity_price_feature_dir "D:\PycharmProjects\SWHY\AttnFactorVAE\preprocess_new\quantity_price_feature" --fundamental_feature_dir "D:\PycharmProjects\SWHY\AttnFactorVAE\preprocess_new\fundamental_feature" --label_dir "D:\PycharmProjects\SWHY\AttnFactorVAE\preprocess_new\label" --label_name "ret10" --train_seq_len 20 --save_path "dataset.pt" --mask_len 10 --mode "drop"
 
 
 
