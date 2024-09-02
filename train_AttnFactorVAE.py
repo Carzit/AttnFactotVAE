@@ -143,7 +143,7 @@ class FactorVAETrainer:
             model.train()
             for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.train_loader)):
                 optimizer.zero_grad() # 梯度归零
-                if fundamental_feature.shape[0] == 0:
+                if fundamental_feature.shape[0] <= 2:
                     continue
 
                 quantity_price_feature = quantity_price_feature.to(device=self.device)
@@ -173,6 +173,8 @@ class FactorVAETrainer:
             model.eval() # 设置为eval模式以冻结dropout
             with torch.no_grad(): 
                 for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(self.val_loader):
+                    if fundamental_feature.shape[0] == 0:
+                        continue
                     quantity_price_feature = quantity_price_feature.to(device=self.device)
                     fundamental_feature = fundamental_feature.to(device=self.device)
                     label = label.to(device=self.device)
@@ -301,10 +303,12 @@ if __name__ == "__main__":
                "hidden_size": args.hidden_size,
                "latent_size": args.latent_size,
                "gru_drop_out": args.gru_dropout,
+               "std_activation":  args.std_activation,
                "checkpoint": args.checkpoint_path,
                "lr": args.lr,
                "scale": args.scale,
-               "gamma": args.gamma}
+               "gamma": args.gamma, 
+               "num_batches_per_epoch": args.num_batches_per_epoch}
 
     trainer = FactorVAETrainer(model=model,
                                loss_func=loss_func,
@@ -330,13 +334,3 @@ if __name__ == "__main__":
     logging.info("Training start...")
     trainer.train()
     logging.info("Training complete.")
-
-# python train.py --log_folder "D:\PycharmProjects\SWHY\log\FactorVAE" --log_name "Model1" --dataset_path "D:\PycharmProjects\SWHY\data\preprocess\dataset.pt" --input_size 101 --num_gru_layers 4 --gru_hidden_size 32 --hidden_size 8 --latent_size 2 --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model1" --save_name "model1" --save_format ".pt" --sample_per_batch 100
-
-# python train.py --log_folder "D:\PycharmProjects\SWHY\log\FactorVAE" --log_name "Model4" --dataset_path "D:\PycharmProjects\SWHY\data\preprocess\dataset_cs_zscore.pt" --input_size 101 --num_gru_layers 2 --gru_hidden_size 32 --hidden_size 16 --latent_size 4 --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model1" --save_name "model4" --save_format ".pt" --sample_per_batch 200
-
-# python train.py --log_folder "D:\PycharmProjects\SWHY\log\FactorVAE" --log_name "Model5" --dataset_path "D:\PycharmProjects\SWHY\data\preprocess\dataset.pt" --input_size 101 --num_gru_layers 2 --gru_hidden_size 32 --hidden_size 16 --latent_size 4 --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model5" --save_name "model5" --save_format ".pt" --sample_per_batch 50 --num_batches_per_epoch 200
-
-# python train.py --log_folder "D:\PycharmProjects\SWHY\log\FactorVAE" --log_name "Model8.txt" --dataset_path "D:\PycharmProjects\SWHY\data\preprocess\dataset.pt" --input_size 101 --num_gru_layers 4 --gru_hidden_size 32 --hidden_size 100 --latent_size 48 --gru_dropout 0.1 --std_activation "exp" --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model8" --save_name "model8" --save_format ".pt" --sample_per_batch 50 --num_batches_per_epoch 200
-
-# python train.py --log_folder "log" --log_name "Model8.txt" --dataset_path "dataset.pt" --quantity_price_feature_size 101 --fundamental_feature_size 31 --num_gru_layers 4 --gru_hidden_size 32 --hidden_size 100 --latent_size 48 --gru_dropout 0.1 --std_activation "exp" --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model8" --save_name "model_attn_1" --save_format ".pt" --sample_per_batch 50 --num_batches_per_epoch 200

@@ -84,6 +84,8 @@ class FactorVAEEvaluator:
         model.eval() # set eval mode to frozen layers like dropout
         with torch.no_grad(): 
             for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.test_loader)):
+                if fundamental_feature.shape[0] <= 2:
+                    continue
                 quantity_price_feature = quantity_price_feature.to(device=self.device)
                 fundamental_feature = fundamental_feature.to(device=self.device)
                 label = label.to(device=self.device)
@@ -187,7 +189,9 @@ if __name__ == "__main__":
     os.makedirs(args.log_folder, exist_ok=True)
     os.makedirs(args.save_folder, exist_ok=True)
     os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
-    os.environ["TF_ENABLE_ONEDNN_OPTS"] = 0
+    os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+    logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
+    logging.getLogger('PIL').setLevel(logging.ERROR)
     
     logging.basicConfig(
         level=logging.DEBUG,
