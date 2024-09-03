@@ -167,7 +167,7 @@ class AttnRetTrainer:
             
             # 每个epoch上的训练
             model.train()
-            for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.train_loader)):
+            for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.train_loader, desc="Train")):
                 optimizer.zero_grad() # 梯度归零
                 if fundamental_feature.shape[0] == 0:
                     continue
@@ -195,11 +195,11 @@ class AttnRetTrainer:
             # 交叉验证集上验证（无梯度）
             model.eval() # 设置为eval模式以冻结dropout
             with torch.no_grad(): 
-                for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(self.val_loader):
+                for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.val_loader, desc="Val")):
                     quantity_price_feature = quantity_price_feature.to(device=self.device, dtype=self.dtype)
                     fundamental_feature = fundamental_feature.to(device=self.device, dtype=self.dtype)
                     label = label.to(device=self.device, dtype=self.dtype)
-                    y_pred = model(fundamental_feature, quantity_price_feature, label)
+                    y_pred = model(fundamental_feature, quantity_price_feature)
                     val_loss = loss_func(label, y_pred)
                     val_loss_list.append(val_loss.item())
 
@@ -312,7 +312,7 @@ if __name__ == "__main__":
                "num_gru_layers": args.num_gru_layers, 
                "gru_hidden_size": args.gru_hidden_size, 
                "gru_drop_out": args.gru_dropout,
-               "num_fc_layers": args.num_fc_layer,
+               "num_fc_layers": args.num_fc_layers,
                "checkpoint": args.checkpoint_path,
                "lr": args.lr,
                "scale": args.scale, 

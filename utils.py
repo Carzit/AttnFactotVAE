@@ -44,11 +44,11 @@ def multiLinear(input_size:int,
                 num_layers:int=1, 
                 nodes:Optional[List[int]]=None)->nn.Sequential:
     if nodes is None:
-        if layers == 1:
+        if num_layers == 1:
             return nn.Linear(input_size, output_size)
         else:
             layers = []
-            step = (input_size - output_size) // (layers - 1)
+            step = (input_size - output_size) // (num_layers - 1)
             for i in range(num_layers):
                 in_features = input_size - i * step
                 out_features = input_size - (i + 1) * step if i < num_layers - 1 else output_size
