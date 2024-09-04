@@ -218,7 +218,7 @@ class FactorVAETrainer:
 
 
 def get_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="FactorVAE Training.")
+    parser = argparse.ArgumentParser(description="AttnFactorVAE Training.")
     
     parser.add_argument("--config_file", type=str, default=None, help="Path of config file")
     parser.add_argument("--output_config", type=str, default=None, help="Path of output config file. Default saved to save_folder as `config.toml`")
@@ -258,8 +258,8 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sample_per_batch", type=int, default=0, help="Check X, y and all kinds of outputs per n batches in one epoch. Specify 0 to unable. Default 0")
     parser.add_argument("--report_per_epoch", type=int, default=1, help="Report train loss and validation loss per n epoches. Specify 0 to unable. Default 1")
     
-    parser.add_argument("--dtype", type=str2dtype, default="FP32", choices=["FP32", "FP64", "FP16", "BF16"], help="Dtype of data and weight tensor. Literally `FP32`, `FP64`, `FP16` or `BF16`. Default `FP32`")
-    parser.add_argument("--device", type=str2device, default="cuda", choices=["auto", "cuda", "cpu"], help="Device to take calculation. Literally `cpu` or `cuda`. Default `cuda`")
+    parser.add_argument("--dtype", type=str, default="FP32", choices=["FP32", "FP64", "FP16", "BF16"], help="Dtype of data and weight tensor. Literally `FP32`, `FP64`, `FP16` or `BF16`. Default `FP32`")
+    parser.add_argument("--device", type=str, default="cuda", choices=["auto", "cuda", "cpu"], help="Device to take calculation. Literally `cpu` or `cuda`. Default `cuda`")
 
     parser.add_argument("--save_per_epoch", type=int, default=1, help="Save model weights per n epoches. Specify 0 to unable. Default 1")
     parser.add_argument("--save_folder", type=str, required=True, help="Folder to save model")
@@ -274,7 +274,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.config_file:
         args = read_config(args.config_file, parser=parser)
-    if not args.output_config:
+    if args.output_config:
         save_config(args, args.output_config)
     else:
         save_config(args, os.path.join(args.save_folder, "config.toml"))
@@ -332,8 +332,8 @@ if __name__ == "__main__":
                                loss_func=loss_func,
                                optimizer=optimizer,
                                lr_scheduler=lr_scheduler, 
-                               dtype=args.dtype,
-                               device=args.device)
+                               dtype=str2dtype(args.dtype),
+                               device=str2device(args.device))
     trainer.load_dataset(train_set=train_set, 
                          val_set=val_set, 
                          shuffle=args.shuffle, 
