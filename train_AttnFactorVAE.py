@@ -18,7 +18,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from dataset import StockDataset, StockSequenceDataset, RandomSampleSampler
 from nets import AttnFactorVAE
 from loss import ObjectiveLoss
-from utils import str2bool, str2dtype, str2device, get_optimizer, get_lr_scheduler
+from utils import str2bool, str2dtype, str2device, get_optimizer, get_lr_scheduler, read_config, save_config
 
 class FactorVAETrainer:
     """FactorVAE Trainer，用于训练和评估一个基于因子变分自编码器（FactorVAE）的模型"""
@@ -141,7 +141,7 @@ class FactorVAETrainer:
             
             # 每个epoch上的训练
             model.train()
-            for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.train_loader, desc=f"Epoch [{epoch}/{self.max_epoches}] Train")):
+            for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.train_loader, desc=f"Epoch [{epoch+1}/{self.max_epoches}] Train")):
                 optimizer.zero_grad() # 梯度归零
                 if fundamental_feature.shape[0] <= 2:
                     continue
@@ -172,7 +172,7 @@ class FactorVAETrainer:
             # 交叉验证集上验证（无梯度）
             model.eval() # 设置为eval模式以冻结dropout
             with torch.no_grad(): 
-                for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.val_loader, desc=f"Epoch [{epoch}/{self.max_epoches}] Val")):
+                for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.val_loader, desc=f"Epoch [{epoch+1}/{self.max_epoches}] Val")):
                     if fundamental_feature.shape[0] == 0:
                         continue
                     quantity_price_feature = quantity_price_feature.to(device=self.device)
@@ -217,8 +217,11 @@ class FactorVAETrainer:
         writer.close()
 
 
-def parse_args() -> argparse.Namespace:
+def get_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="FactorVAE Training.")
+    
+    parser.add_argument("--config_file", type=str, default=None, help="Path of config file")
+    parser.add_argument("--output_config", type=str, default=None, help="Path of output config file. Default saved to save_folder as `config.toml`")
 
     parser.add_argument("--log_folder", type=str, default=os.curdir, help="Path of folder for log file. Default `.`")
     parser.add_argument("--log_name", type=str, default="log.txt", help="Name of log file. Default `log.txt`")
@@ -243,7 +246,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr_scheduler_num_cycles", type=float, default=0.5, help="Number of cycles (for cosine scheduler) or factor in polynomial scheduler.")
     parser.add_argument("--lr_scheduler_power", type=float, default=1.0, help="Power factor for polynomial learning rate scheduler.")
     
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate for optimizer. Default 0.001")
+    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate for optimizer. Default 0.001")
     parser.add_argument("--gamma", type=float, default=1, help="Gamma for KL Div in Objective Function Loss. Default 1")
     parser.add_argument("--scale", type=float, default=100, help="Scale for MSE Loss. Default 100")
 
@@ -263,11 +266,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save_name", type=str, default="Model", help="Model name. Default `Model`")
     parser.add_argument("--save_format", type=str, default=".pt", help="File format of model to save, literally `.pt` or `.safetensors`. Default `.pt`")
 
-    return parser.parse_args()
+    return parser
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    parser = get_parser()
+    args = parser.parse_args()
+    if args.config_file:
+        args = read_config(args.config_file, parser=parser)
+    if not args.output_config:
+        save_config(args, args.output_config)
+    else:
+        save_config(args, os.path.join(args.save_folder, "config.toml"))
 
     os.makedirs(args.log_folder, exist_ok=True)
     os.makedirs(args.save_folder, exist_ok=True)
@@ -313,7 +323,7 @@ if __name__ == "__main__":
                "gru_drop_out": args.gru_dropout,
                "std_activation":  args.std_activation,
                "checkpoint": args.checkpoint_path,
-               "lr": args.lr,
+               "lr": args.learning_rate,
                "scale": args.scale,
                "gamma": args.gamma, 
                "num_batches_per_epoch": args.num_batches_per_epoch}

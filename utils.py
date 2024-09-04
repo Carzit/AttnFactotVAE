@@ -1,8 +1,12 @@
+import os
 import ast
 import argparse
 from typing import Callable, Literal, Union, Optional, List
 from collections import OrderedDict
 
+import json
+import toml
+import yaml
 
 import torch
 import torch.nn as nn
@@ -11,7 +15,6 @@ import torch.optim as optim
 import lion_pytorch
 import diffusers
 import transformers
-
 
 def str2bool(value:Union[bool, str]):
     if isinstance(value, bool):
@@ -290,7 +293,44 @@ def get_lr_scheduler(args:argparse.Namespace, optimizer:torch.optim.Optimizer, n
         assert type(optimizer) == transformers.optimization.Adafactor, f"Adafactor Scheduler must be used with Adafactor Optimizer. Unexpected optimizer type {type(optimizer)}"
         lr_scheduler = transformers.optimization.AdafactorSchedule(optimizer, initial_lr=args.lr)
     return lr_scheduler
-        
 
+def read_config(config_file: str, parser: argparse.ArgumentParser) -> argparse.Namespace:
+    if not os.path.exists(config_file):
+        raise FileNotFoundError(f"Config file {config_file} not found.")
+
+    file_ext = os.path.splitext(config_file)[1].lower()
+
+    with open(config_file, 'r') as f:
+        if file_ext == '.json':
+            config_dict = json.load(f)
+        elif file_ext == '.toml':
+            config_dict = toml.load(f)
+        elif file_ext in ['.yaml', '.yml']:
+            config_dict = yaml.safe_load(f)
+        else:
+            raise ValueError(f"Unsupported config file format: {file_ext}")
+
+    config_args = argparse.Namespace(**config_dict)
+    args = parser.parse_args(namespace=config_args)
+    return args
+   
+def save_config(args: argparse.Namespace, config_file: str):
+    config_dict = vars(args)
+    file_ext = os.path.splitext(config_file)[1].lower()
+
+    for key in ["config_file", "output_config"]:# Remove unnecessary keys
+        config_dict.pop(key, None)
+
+    with open(config_file, 'w') as f:
+        if file_ext == '.json':
+            json.dump(config_dict, f, indent=4)
+        elif file_ext == '.toml':
+            toml.dump(config_dict, f)
+        elif file_ext in ['.yaml', '.yml']:
+            yaml.safe_dump(config_dict, f, default_flow_style=False)
+        else:
+            raise ValueError(f"Unsupported config file format: {file_ext}")
+
+    print(f"Config saved to {config_file}")
             
 
