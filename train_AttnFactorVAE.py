@@ -18,7 +18,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from dataset import StockDataset, StockSequenceDataset, RandomSampleSampler
 from nets import AttnFactorVAE
 from loss import ObjectiveLoss
-from utils import str2bool, str2dtype, str2device
+from utils import str2bool, str2dtype, str2device, get_optimizer, get_lr_scheduler
 
 class FactorVAETrainer:
     """FactorVAE Trainer，用于训练和评估一个基于因子变分自编码器（FactorVAE）的模型"""
@@ -141,7 +141,7 @@ class FactorVAETrainer:
             
             # 每个epoch上的训练
             model.train()
-            for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.train_loader)):
+            for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.train_loader, desc=f"Epoch [{epoch}/{self.max_epoches}] Train")):
                 optimizer.zero_grad() # 梯度归零
                 if fundamental_feature.shape[0] <= 2:
                     continue
@@ -172,7 +172,7 @@ class FactorVAETrainer:
             # 交叉验证集上验证（无梯度）
             model.eval() # 设置为eval模式以冻结dropout
             with torch.no_grad(): 
-                for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(self.val_loader):
+                for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.val_loader, desc=f"Epoch [{epoch}/{self.max_epoches}] Val")):
                     if fundamental_feature.shape[0] == 0:
                         continue
                     quantity_price_feature = quantity_price_feature.to(device=self.device)
@@ -217,7 +217,7 @@ class FactorVAETrainer:
         writer.close()
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="FactorVAE Training.")
 
     parser.add_argument("--log_folder", type=str, default=os.curdir, help="Path of folder for log file. Default `.`")
@@ -233,9 +233,17 @@ def parse_args():
     parser.add_argument("--hidden_size", type=int, required=True, help="Hidden size of FactorVAE(Encoder, Pedictor and Decoder), i.e. num of portfolios.")
     parser.add_argument("--latent_size", type=int, required=True, help="Latent size of FactorVAE(Encoder, Pedictor and Decoder), i.e. num of factors.")
     parser.add_argument("--gru_dropout", type=float, default=0.1, help="Dropout probs in gru layers. Default 0.1")
-    parser.add_argument("--std_activation", type=str, default="exp", help="Activation function for standard deviation calculation, literally `exp` or `softplus`. Default `exp`")
+    parser.add_argument("--std_activation", type=str, default="exp", choices=["exp", "softplus"], help="Activation function for standard deviation calculation, literally `exp` or `softplus`. Default `exp`")
 
-    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate for optimizer. Default 0.001")
+    parser.add_argument("--optimizer_type", type=str, default="Lion", choices=["Adam", "AdamW", "Lion", "SGDNesterov", "DAdaptation", "Adafactor"], help="Optimizer for training. Literally `Adam`, `AdamW`, `Lion`, `SGDNesterov`, `DAdaptation` or `Adafactor`. Default `Lion`")
+    parser.add_argument("--optimizer_kwargs", type=str, default=None, nargs="+", help="Key arguments for optimizer. e.g. `betas=(0.9, 0.99) weight_decay=0.0 use_triton=False decoupled_weight_decay=False` for optimizer Lion by default")
+    
+    parser.add_argument("--lr_scheduler_type", type=str, default="constant", choices=["constant", "linear", "cosine", "cosine_with_restarts", "polynomial", "adafactor"], help="Learning rate scheduler for optimizer. Literally `constant`, `linear`, `cosine`, `cosine_with_restarts`, `polynomial`, `adafactor`. Default `constant`.")
+    parser.add_argument("--lr_scheduler_warmup_steps", type=int, default=0, help="Number of steps for the warmup phase in the learning rate scheduler.")
+    parser.add_argument("--lr_scheduler_num_cycles", type=float, default=0.5, help="Number of cycles (for cosine scheduler) or factor in polynomial scheduler.")
+    parser.add_argument("--lr_scheduler_power", type=float, default=1.0, help="Power factor for polynomial learning rate scheduler.")
+    
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate for optimizer. Default 0.001")
     parser.add_argument("--gamma", type=float, default=1, help="Gamma for KL Div in Objective Function Loss. Default 1")
     parser.add_argument("--scale", type=float, default=100, help="Scale for MSE Loss. Default 100")
 
@@ -247,8 +255,8 @@ def parse_args():
     parser.add_argument("--sample_per_batch", type=int, default=0, help="Check X, y and all kinds of outputs per n batches in one epoch. Specify 0 to unable. Default 0")
     parser.add_argument("--report_per_epoch", type=int, default=1, help="Report train loss and validation loss per n epoches. Specify 0 to unable. Default 1")
     
-    parser.add_argument("--dtype", type=str2dtype, default="FP32", help="Dtype of data and weight tensor. Literally `FP32`, `FP64`, `FP16` or `BF16`. Default `FP32`")
-    parser.add_argument("--device", type=str2device, default="cuda", help="device to take calculation. Literally `cpu` or `cuda`. Default `cuda`")
+    parser.add_argument("--dtype", type=str2dtype, default="FP32", choices=["FP32", "FP64", "FP16", "BF16"], help="Dtype of data and weight tensor. Literally `FP32`, `FP64`, `FP16` or `BF16`. Default `FP32`")
+    parser.add_argument("--device", type=str2device, default="cuda", choices=["auto", "cuda", "cpu"], help="Device to take calculation. Literally `cpu` or `cuda`. Default `cuda`")
 
     parser.add_argument("--save_per_epoch", type=int, default=1, help="Save model weights per n epoches. Specify 0 to unable. Default 1")
     parser.add_argument("--save_folder", type=str, required=True, help="Folder to save model")
@@ -291,8 +299,8 @@ if __name__ == "__main__":
                           gru_drop_out=args.gru_dropout,
                           std_activ=args.std_activation)
 
-    optimizer = torch.optim.Adam(model.parameters(), 
-                                 lr=args.lr)
+    optimizer = get_optimizer(args, trainable_params=model.parameters())
+    lr_scheduler = get_lr_scheduler(args, optimizer=optimizer)
     loss_func = ObjectiveLoss(scale=args.scale, 
                               gamma=args.gamma)
 
@@ -313,6 +321,7 @@ if __name__ == "__main__":
     trainer = FactorVAETrainer(model=model,
                                loss_func=loss_func,
                                optimizer=optimizer,
+                               lr_scheduler=lr_scheduler, 
                                dtype=args.dtype,
                                device=args.device)
     trainer.load_dataset(train_set=train_set, 

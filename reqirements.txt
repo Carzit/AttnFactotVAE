@@ -1,0 +1,13 @@
+pandas
+numpy
+scipy
+tqdm
+
+pytorch
+tensorboard
+safetensors
+
+lion_pytorch
+dadaptation
+diffusers
+transformers

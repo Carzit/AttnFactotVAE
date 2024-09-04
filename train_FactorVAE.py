@@ -8,6 +8,7 @@ from typing import List, Dict, Tuple, Optional, Literal, Union, Any, Callable
 
 from tqdm import tqdm
 from safetensors.torch import save_file, load_file
+from scipy.stats import pearsonr, spearmanr
 
 import torch
 import torch.nn as nn
@@ -15,21 +16,21 @@ from torch.utils.data import Dataset, DataLoader, Sampler
 from torch.utils.tensorboard.writer import SummaryWriter
 
 from dataset import StockDataset, StockSequenceDataset, RandomSampleSampler
-from nets import AttnRet
-from loss import MSE_Loss
+from nets import FactorVAE
+from loss import ObjectiveLoss
 from utils import str2bool, str2dtype, str2device
 
-class AttnRetTrainer:
+class FactorVAETrainer:
     """FactorVAE Trainer，用于训练和评估一个基于因子变分自编码器（FactorVAE）的模型"""
     def __init__(self,
-                 model:AttnRet,
-                 loss_func:MSE_Loss = None,
+                 model:FactorVAE,
+                 loss_func:ObjectiveLoss = None,
                  optimizer:torch.optim.Optimizer = None,
                  lr_scheduler:Optional[torch.optim.lr_scheduler.LRScheduler] = None,
                  dtype:torch.dtype = torch.float32,
                  device:torch.device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")) -> None:
         
-        self.model:AttnRet = model # FactorVAE 模型实例
+        self.model:FactorVAE = model # FactorVAE 模型实例
         self.loss_func:nn.Module = loss_func # 损失函数实例
         self.optimizer:nn.Module = optimizer # 优化器实例
         self.lr_scheduler:Optional[torch.optim.lr_scheduler.LRScheduler] = lr_scheduler # 学习率调度器实例
@@ -46,7 +47,7 @@ class AttnRetTrainer:
         self.sample_per_batch:int = 0
         self.report_per_epoch:int = 1
         self.save_per_epoch:int = 1
-        self.save_folder:str = "weights"
+        self.save_folder:str = os.curdir
         self.save_name:str = "Model"
         self.save_format:Literal[".pt", ".safetensors"] = ".pt"
         
@@ -127,32 +128,6 @@ class AttnRetTrainer:
                 self.log_folder, f"TRAIN_{self.save_name}_{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
             ))
         
-    def save_configs(self, save_path:Optional[str]=None): #TODO
-        if save_path is None:
-            save_path = os.path.join(self.save_folder, "config.json")
-
-        config = {
-            "model": {
-                "type": "AttnRet",
-                "fundamental_feature_size": self.hparams["fundamental_feature_size"], 
-                "quantity_price_feature_size": self.hparams["quantity_price_feature_size"],
-                "num_gru_layers": self.hparams["num_gru_layers"], 
-                "gru_hidden_size": self.hparams["gru_hidden_size"], 
-                "gru_drop_out": self.hparams["gru_dropout"],
-                "num_fc_layers": self.hparams["num_fc_layers"], 
-                "pretrained": self.hparams["checkpoint"]},
-            "optimizer": {
-                "type": "Adam",
-                "learning_rate": self.hparams["lr"]},
-            "loss": {
-                "type": "MSE", 
-                "scale": self.hparams["sacle"]},
-            "max_epoches": self.max_epoches,
-            "num_batches_per_epoch": self.hparams["num_batches_per_epoch"],
-            "device": self.device,
-            "dtype": self.dtype,
-            }
-        
     def train(self):
         writer = self.writer
         model = self.model.to(device=self.device, dtype=self.dtype)
@@ -168,15 +143,14 @@ class AttnRetTrainer:
             model.train()
             for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.train_loader, desc=f"Epoch [{epoch}/{self.max_epoches}] Train")):
                 optimizer.zero_grad() # 梯度归零
-                if fundamental_feature.shape[0] == 0:
+                if fundamental_feature.shape[0] <= 2:
                     continue
 
-                quantity_price_feature = quantity_price_feature.to(device=self.device, dtype=self.dtype)
-                fundamental_feature = fundamental_feature.to(device=self.device, dtype=self.dtype)
-                label = label.to(device=self.device, dtype=self.dtype)
+                quantity_price_feature = quantity_price_feature.to(device=self.device)
+                label = label.to(device=self.device)
 
-                y_pred = model(fundamental_feature, quantity_price_feature) # 模型运算
-                train_loss = loss_func(label, y_pred) # 损失函数计算
+                y_hat, mu_posterior, sigma_posterior, mu_prior, sigma_prior = model(quantity_price_feature, label) # 模型运算
+                train_loss, train_recon_loss, train_kld_loss = loss_func(label, y_hat, mu_prior, sigma_prior, mu_posterior, sigma_posterior) # 损失函数计算
                 
                 train_loss.backward() # 梯度反向传播
                 optimizer.step() # 优化器更新模型权重
@@ -185,7 +159,8 @@ class AttnRetTrainer:
                 # 训练时抽样检查
                 if self.sample_per_batch:
                     if (batch+1) % self.sample_per_batch == 0:
-                        logging.debug(f"<Batch {batch+1}>  loss:{train_loss.item()} y_hat:{y_pred} y_true:{label}")
+                        logging.debug(f"<Batch {batch+1}>  loss:{train_loss.item()} recon:{train_recon_loss.item()} kld:{train_kld_loss.item()}")
+                        logging.debug(f"<Batch {batch+1}>  y_hat:{y_hat} mu_prior:{mu_prior} sigma_prior:{sigma_prior} mu_posterior:{mu_posterior} sigma_posterior:{sigma_posterior}")
               
             # Tensorboard写入当前完成epoch的训练损失
             train_loss_epoch = sum(train_loss_list)/len(train_loss_list)
@@ -195,11 +170,12 @@ class AttnRetTrainer:
             model.eval() # 设置为eval模式以冻结dropout
             with torch.no_grad(): 
                 for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.val_loader, desc=f"Epoch [{epoch}/{self.max_epoches}] Val")):
-                    quantity_price_feature = quantity_price_feature.to(device=self.device, dtype=self.dtype)
-                    fundamental_feature = fundamental_feature.to(device=self.device, dtype=self.dtype)
-                    label = label.to(device=self.device, dtype=self.dtype)
-                    y_pred = model(fundamental_feature, quantity_price_feature)
-                    val_loss = loss_func(label, y_pred)
+                    if fundamental_feature.shape[0] == 0:
+                        continue
+                    quantity_price_feature = quantity_price_feature.to(device=self.device)
+                    label = label.to(device=self.device)
+                    y_hat, mu_posterior, sigma_posterior, mu_prior, sigma_prior = model(quantity_price_feature, label)
+                    val_loss, *_ = loss_func(label, y_hat, mu_prior, sigma_prior, mu_posterior, sigma_posterior)
                     val_loss_list.append(val_loss.item())
 
                 val_loss_epoch = sum(val_loss_list) / len(val_loss_list)  
@@ -248,11 +224,15 @@ def parse_args():
     parser.add_argument("--fundamental_feature_size", type=int, required=True, help="Input size of fundamental feature")
     parser.add_argument("--num_gru_layers", type=int, required=True, help="Num of GRU layers in feature extractor.")
     parser.add_argument("--gru_hidden_size", type=int, required=True, help="Hidden size of each GRU layer. num_gru_layers * gru_hidden_size i.e. the input size of FactorEncoder and Factor Predictor.")
+    parser.add_argument("--hidden_size", type=int, required=True, help="Hidden size of FactorVAE(Encoder, Pedictor and Decoder), i.e. num of portfolios.")
+    parser.add_argument("--latent_size", type=int, required=True, help="Latent size of FactorVAE(Encoder, Pedictor and Decoder), i.e. num of factors.")
     parser.add_argument("--gru_dropout", type=float, default=0.1, help="Dropout probs in gru layers. Default 0.1")
-    parser.add_argument("--num_fc_layers", type=int, required=True, help="Num of full connected layers in MLP")
+    parser.add_argument("--std_activation", type=str, default="exp", choices=["exp", "softplus"], help="Activation function for standard deviation calculation, literally `exp` or `softplus`. Default `exp`")
 
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate for optimizer. Default 0.001")
+    parser.add_argument("--gamma", type=float, default=1, help="Gamma for KL Div in Objective Function Loss. Default 1")
     parser.add_argument("--scale", type=float, default=100, help="Scale for MSE Loss. Default 100")
+
     parser.add_argument("--num_workers", type=int, default=4, help="Num of subprocesses to use for data loading. 0 means that the data will be loaded in the main process. Default 4")
     parser.add_argument("--shuffle", type=str2bool, default=True, help="Whether to shuffle dataloader. Default True")
     parser.add_argument("--num_batches_per_epoch", type=int, default=-1, help="Num of batches sampled from all batches to be trained per epoch. Note that sampler option is mutually exclusive with shuffle. Specify -1 to disable (use all batches). Default -1")
@@ -267,7 +247,7 @@ def parse_args():
     parser.add_argument("--save_per_epoch", type=int, default=1, help="Save model weights per n epoches. Specify 0 to unable. Default 1")
     parser.add_argument("--save_folder", type=str, required=True, help="Folder to save model")
     parser.add_argument("--save_name", type=str, default="Model", help="Model name. Default `Model`")
-    parser.add_argument("--save_format", type=str, default=".pt", choices=[".pt", ".safetensors"], help="File format of model to save, literally `.pt` or `.safetensors`. Default `.pt`")
+    parser.add_argument("--save_format", type=str, default=".pt", help="File format of model to save, literally `.pt` or `.safetensors`. Default `.pt`")
 
     return parser.parse_args()
 
@@ -296,32 +276,38 @@ if __name__ == "__main__":
     else:
         train_sampler = None
 
-    model = AttnRet(fundamental_feature_size=args.fundamental_feature_size, 
-                    quantity_price_feature_size=args.quantity_price_feature_size,
-                    num_gru_layers=args.num_gru_layers, 
-                    gru_hidden_size=args.gru_hidden_size, 
-                    gru_drop_out=args.gru_dropout,
-                    num_fc_layers=args.num_fc_layers)
+    model = FactorVAE(input_size=args.quantity_price_feature_size,
+                      num_gru_layers=args.num_gru_layers, 
+                      gru_hidden_size=args.gru_hidden_size, 
+                      hidden_size=args.hidden_size, 
+                      latent_size=args.latent_size,
+                      gru_drop_out=args.gru_dropout,
+                      std_activ=args.std_activation)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    loss_func = MSE_Loss(scale=args.scale)
+    optimizer = torch.optim.Adam(model.parameters(), 
+                                 lr=args.lr)
+    loss_func = ObjectiveLoss(scale=args.scale, 
+                              gamma=args.gamma)
 
-    hparams = {"fundamental_feature_size":args.fundamental_feature_size, 
+    hparams = {"fundamental_feature_size": None, 
                "quantity_price_feature_size":args.quantity_price_feature_size,
                "num_gru_layers": args.num_gru_layers, 
                "gru_hidden_size": args.gru_hidden_size, 
+               "hidden_size": args.hidden_size,
+               "latent_size": args.latent_size,
                "gru_drop_out": args.gru_dropout,
-               "num_fc_layers": args.num_fc_layers,
+               "std_activation":  args.std_activation,
                "checkpoint": args.checkpoint_path,
                "lr": args.lr,
-               "scale": args.scale, 
-               "num_batches_per_epoch":args.num_batches_per_epoch}
+               "scale": args.scale,
+               "gamma": args.gamma, 
+               "num_batches_per_epoch": args.num_batches_per_epoch}
 
-    trainer = AttnRetTrainer(model=model,
-                             loss_func=loss_func,
-                             optimizer=optimizer,
-                             dtype=args.dtype,
-                             device=args.device)
+    trainer = FactorVAETrainer(model=model,
+                               loss_func=loss_func,
+                               optimizer=optimizer,
+                               dtype=args.dtype,
+                               device=args.device)
     trainer.load_dataset(train_set=train_set, 
                          val_set=val_set, 
                          shuffle=args.shuffle, 
@@ -341,13 +327,3 @@ if __name__ == "__main__":
     logging.info("Training start...")
     trainer.train()
     logging.info("Training complete.")
-
-# python train.py --log_folder "D:\PycharmProjects\SWHY\log\FactorVAE" --log_name "Model1" --dataset_path "D:\PycharmProjects\SWHY\data\preprocess\dataset.pt" --input_size 101 --num_gru_layers 4 --gru_hidden_size 32 --hidden_size 8 --latent_size 2 --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model1" --save_name "model1" --save_format ".pt" --sample_per_batch 100
-
-# python train.py --log_folder "D:\PycharmProjects\SWHY\log\FactorVAE" --log_name "Model4" --dataset_path "D:\PycharmProjects\SWHY\data\preprocess\dataset_cs_zscore.pt" --input_size 101 --num_gru_layers 2 --gru_hidden_size 32 --hidden_size 16 --latent_size 4 --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model1" --save_name "model4" --save_format ".pt" --sample_per_batch 200
-
-# python train.py --log_folder "D:\PycharmProjects\SWHY\log\FactorVAE" --log_name "Model5" --dataset_path "D:\PycharmProjects\SWHY\data\preprocess\dataset.pt" --input_size 101 --num_gru_layers 2 --gru_hidden_size 32 --hidden_size 16 --latent_size 4 --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model5" --save_name "model5" --save_format ".pt" --sample_per_batch 50 --num_batches_per_epoch 200
-
-# python train.py --log_folder "D:\PycharmProjects\SWHY\log\FactorVAE" --log_name "Model8.txt" --dataset_path "D:\PycharmProjects\SWHY\data\preprocess\dataset.pt" --input_size 101 --num_gru_layers 4 --gru_hidden_size 32 --hidden_size 100 --latent_size 48 --gru_dropout 0.1 --std_activation "exp" --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model8" --save_name "model8" --save_format ".pt" --sample_per_batch 50 --num_batches_per_epoch 200
-
-# python train.py --log_folder "log" --log_name "Model8.txt" --dataset_path "dataset.pt" --quantity_price_feature_size 101 --fundamental_feature_size 31 --num_gru_layers 4 --gru_hidden_size 32 --hidden_size 100 --latent_size 48 --gru_dropout 0.1 --std_activation "exp" --save_folder "D:\PycharmProjects\SWHY\model\factor-vae\model8" --save_name "model_attn_1" --save_format ".pt" --sample_per_batch 50 --num_batches_per_epoch 200
