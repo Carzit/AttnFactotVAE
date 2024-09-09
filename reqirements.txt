@@ -7,10 +7,9 @@ pytorch
 tensorboard
 safetensors
 
-lion_pytorch
+lion-pytorch
 dadaptation
 diffusers
 transformers
 
-yaml
 toml
