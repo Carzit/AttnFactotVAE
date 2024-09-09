@@ -125,11 +125,10 @@ def modules_weight_init(modules:OrderedDict, mode:str, generator:torch.Generator
 def check(tensor:torch.Tensor):
     return torch.any(torch.isnan(tensor) | torch.isinf(tensor))
 
-def get_optimizer(args:argparse.Namespace, trainable_params) -> torch.optim.Optimizer:
+def get_optimizer(args:argparse.Namespace, trainable_params, lr) -> torch.optim.Optimizer:
     # "Optimizer to use: Adam, AdamW, Lion, SGDNesterov, DAdaptation, Adafactor"
 
     optimizer_type = args.optimizer_type
-    lr = args.learning_rate
     optimizer_kwargs = str2dict(args.optimizer_kwargs)
 
     if optimizer_type == "Lion":
@@ -260,7 +259,7 @@ def get_optimizer(args:argparse.Namespace, trainable_params) -> torch.optim.Opti
     return optimizer
 
 
-def get_lr_scheduler(args:argparse.Namespace, optimizer:torch.optim.Optimizer, num_processes: int = 1) -> torch.optim.lr_scheduler.LRScheduler:
+def get_lr_scheduler(args:argparse.Namespace, optimizer:torch.optim.Optimizer, lr, num_processes: int = 1) -> torch.optim.lr_scheduler.LRScheduler:
     # ["constant", "linear", "cosine", "cosine_with_restarts", "polynomial", "adafactor"]
     name:str = args.lr_scheduler_type
     num_warmup_steps: int = args.lr_scheduler_warmup_steps # default 0
@@ -291,7 +290,7 @@ def get_lr_scheduler(args:argparse.Namespace, optimizer:torch.optim.Optimizer, n
                                                                                         power=power)
     elif name.lower() == "adafactor":
         assert type(optimizer) == transformers.optimization.Adafactor, f"Adafactor Scheduler must be used with Adafactor Optimizer. Unexpected optimizer type {type(optimizer)}"
-        lr_scheduler = transformers.optimization.AdafactorSchedule(optimizer, initial_lr=args.lr)
+        lr_scheduler = transformers.optimization.AdafactorSchedule(optimizer, initial_lr=lr)
     return lr_scheduler
 
 def read_config(config_file: str, parser: argparse.ArgumentParser) -> argparse.Namespace:

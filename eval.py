@@ -95,7 +95,7 @@ class FactorVAEEvaluator:
                 y_hat, mu_prior, sigma_prior  = model.predict(fundamental_feature, 
                                                               quantity_price_feature,)
                 pred_score = self.pred_eval_func(y_hat, label)
-                latent_score = self.latent_eval_func(mu_prior, sigma_prior, mu_posterior, sigma_posterior)
+                latent_score = self.latent_eval_func(mu_prior, sigma_prior)
                 
                 self.pred_scores.append(pred_score.item())
                 self.latent_scores.append(latent_score.item())

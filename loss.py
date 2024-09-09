@@ -21,13 +21,12 @@ class ObjectiveLoss(nn.Module):
         self.scale = scale
         self.gamma = gamma
         self.recon_loss = MSE_Loss(scale=scale)
+        self.pred_loss = Pred_Loss()
         self.kl_div_loss = KL_Div_Loss()
 
     def forward(self, 
                 y, 
                 y_hat, 
-                mu_prior, 
-                sigma_prior, 
                 mu_posterior, 
                 sigma_posterior) -> torch.Tensor:
 
@@ -35,12 +34,23 @@ class ObjectiveLoss(nn.Module):
         recon_loss = self.recon_loss(y_hat, y)
         
         # KL Div Loss
-        kld_loss = self.kl_div_loss(mu_prior, sigma_prior, mu_posterior, sigma_posterior)
+        kld_loss = self.kl_div_loss(mu_posterior, sigma_posterior)
         
-        return recon_loss + kld_loss, recon_loss, kld_loss   
-    
+        
+        return recon_loss + kld_loss , recon_loss, kld_loss #torch.tensor(0.0)
 
 class KL_Div_Loss(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def forward(self, 
+                mu_posterior, 
+                sigma_posterior) -> torch.Tensor:
+        # kl_divergence between two gaussian distribution:
+        # KL(N(x;μ_1, σ_1)||N(x;μ_2, σ_2)) = log（σ_2/σ_1) + (σ_1^2 + (μ_1 - μ_2)^2) / (2·σ_2^2) - 1/2
+        return torch.sum(-torch.log(sigma_posterior) + (sigma_posterior**2 + mu_posterior**2) / 2 - 0.5)
+
+class Pred_Loss(nn.Module):
     def __init__(self) -> None:
         super().__init__()
 

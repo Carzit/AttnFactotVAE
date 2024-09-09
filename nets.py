@@ -97,7 +97,7 @@ class PortfolioLayer(nn.Module):
 
     def forward(self, y:torch.Tensor, e:torch.Tensor): # y: [num_stocks] e: [num_stocks, input_size]
         a_p = F.softmax(torch.matmul(self.w_p, e.T) + self.b_p, dim=-1) #-> [num_portfolios, num_stocks]
-        y_p = torch.sum(a_p * y, dim=-1) #-> [num_portfolios]
+        y_p = torch.matmul(a_p, y) #-> [num_portfolios]
         return y_p
 
 class FactorEncoder(nn.Module):
@@ -213,8 +213,9 @@ class FactorDecoder(nn.Module):
         mu_alpha, sigma_alpha = self.alpha_layer(e) #->[num_stocks]
         beta = self.beta_layer(e) #->[num_stocks, latent_size(num_fators)]
 
-        mu_y = mu_alpha + torch.sum(mu_z * beta, dim=-1) #->[num_stocks]
-        sigma_y = torch.sqrt(sigma_alpha ** 2 + torch.sum(beta ** 2 * sigma_z ** 2, dim=-1)) #->[num_stocks]
+        mu_y = mu_alpha +  torch.matmul(beta, mu_z) #->[num_stocks]
+        sigma_y = torch.sqrt(sigma_alpha**2 + torch.matmul(beta**2, sigma_z**2)) #->[num_stocks]
+        
         y = self.reparameterization(mu_y, sigma_y) #->[num_stocks]
         return y
 
@@ -229,6 +230,7 @@ class SingleHeadAttention(nn.Module):
         self.q = nn.Parameter(torch.randn(hidden_size))
         self.w_key = nn.Linear(input_size, hidden_size, bias=False)
         self.w_value = nn.Linear(input_size, hidden_size, bias=False)
+        self.epsilon = 1e-6
 
     def forward(self, e):# e: [num_stocks, input_size(features)]
         k = self.w_key(e)  # -> (N, H)
@@ -237,8 +239,8 @@ class SingleHeadAttention(nn.Module):
         q_norm = self.q / self.q.norm(dim=-1, keepdim=True)  # -> (H)
         k_norm = k / k.norm(dim=-1, keepdim=True)  # -> (N, H)
         
-        attn_scores = torch.matmul(q_norm, k_norm.transpose(-1,-2))  # (N)
-        attn_weights = attn_scores / attn_scores.sum(dim=-1, keepdim=True)  # (N)
+        attn_scores = F.relu(torch.matmul(q_norm, k_norm.transpose(-1,-2))) # (N)
+        attn_weights = attn_scores / (attn_scores.sum(dim=-1, keepdim=True) + self.epsilon)   # (N)
         
         h_att = torch.matmul(attn_weights, v)  # (H)
         return h_att
