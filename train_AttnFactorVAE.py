@@ -151,8 +151,16 @@ class FactorVAETrainer:
         for epoch in range(self.max_epoches):
             train_loss_list = []
             val_loss_list = []
+
+            train_recon_loss_list = []
+            val_recon_loss_list = []
+
+            train_kld_loss_list = []
+            val_kld_loss_list = []
+
+            train_pred_loss_list = []
+            val_pred_loss_list = []
             
-            # 每个epoch上的训练
             model.train()
             for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.train_loader, desc=f"Epoch [{epoch+1}/{self.max_epoches}] Train")):    
                 if fundamental_feature.shape[0] <= 2:
@@ -181,7 +189,11 @@ class FactorVAETrainer:
                     torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=self.grad_clip)
                 vae_optimizer.step()
                 predictor_optimizer.step()
-                train_loss_list.append(train_loss.item()) # 记录训练损失
+                
+                train_loss_list.append(train_loss.item())
+                train_recon_loss_list.append(train_recon_loss.item())
+                train_kld_loss_list.append(train_kld_loss.item())
+                train_pred_loss_list.append(train_pred_loss.item())
                 
                 # 训练时抽样检查
                 if self.sample_per_batch:
@@ -215,10 +227,18 @@ class FactorVAETrainer:
                                                         sigma_posterior)
                     val_loss = val_vae_loss + val_pred_loss
                     val_loss_list.append(val_loss.item())
+                    val_recon_loss_list.append(val_recon_loss.item())
+                    val_kld_loss_list.append(val_kld_loss.item())
+                    val_pred_loss_list.append(val_pred_loss.item())
 
                 val_loss_epoch = sum(val_loss_list) / len(val_loss_list)  
                 writer.add_scalar("Validation Loss", val_loss_epoch, epoch+1)
                 writer.add_scalars("Train-Val Loss", {"Train Loss": train_loss_epoch, "Validation Loss": val_loss_epoch}, epoch+1)
+                writer.add_scalars("Loss", {"Train": sum(train_recon_loss_list)/len(train_recon_loss_list), "Val": sum(val_recon_loss_list)/len(val_recon_loss_list)}, epoch+1)
+                writer.add_scalars("Reconstruct Loss", {"Train": sum(train_recon_loss_list)/len(train_recon_loss_list), "Val": sum(val_recon_loss_list)/len(val_recon_loss_list)}, epoch+1)
+                writer.add_scalars("KLD Loss", {"Train": sum(train_kld_loss_list)/len(train_kld_loss_list), "Val": sum(val_kld_loss_list)/len(val_kld_loss_list)}, epoch+1)
+                writer.add_scalars("Predictor Loss", {"Train": sum(train_pred_loss_list)/len(train_pred_loss_list), "Val": sum(val_pred_loss_list)/len(val_pred_loss_list)}, epoch+1)
+                
 
             # 如果有超参数字典传入，Tensorboard记录超参数
             if self.hparams:
@@ -253,17 +273,19 @@ class FactorVAETrainer:
 def get_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AttnFactorVAE Training.")
     
-    parser.add_argument("--config_file", type=str, default=None, help="Path of config file")
+    parser.add_argument("--config_file", type=str, default=None, help="Path of config file. Optional")
     parser.add_argument("--output_config", type=str, default=None, help="Path of output config file. Default saved to save_folder as `config.toml`")
 
     parser.add_argument("--log_folder", type=str, default=os.curdir, help="Path of folder for log file. Default `.`")
     parser.add_argument("--log_name", type=str, default="log.txt", help="Name of log file. Default `log.txt`")
 
+    # dataloader config
     parser.add_argument("--dataset_path", type=str, required=True, help="Path of dataset .pt file")
     parser.add_argument("--num_workers", type=int, default=4, help="Num of subprocesses to use for data loading. 0 means that the data will be loaded in the main process. Default 4")
     parser.add_argument("--shuffle", type=str2bool, default=True, help="Whether to shuffle dataloader. Default True")
     parser.add_argument("--num_batches_per_epoch", type=int, default=-1, help="Num of batches sampled from all batches to be trained per epoch. Note that sampler option is mutually exclusive with shuffle. Specify -1 to disable (use all batches). Default -1")
     
+    # model config
     parser.add_argument("--checkpoint_path", type=str, default=None, help="Path of checkpoint. Optional")
     parser.add_argument("--quantity_price_feature_size", type=int, required=True, help="Input size of quantity-price feature")
     parser.add_argument("--fundamental_feature_size", type=int, required=True, help="Input size of fundamental feature")
@@ -274,6 +296,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gru_dropout", type=float, default=0.1, help="Dropout probs in gru layers. Default 0.1")
     parser.add_argument("--std_activation", type=str, default="exp", choices=["exp", "softplus"], help="Activation function for standard deviation calculation, literally `exp` or `softplus`. Default `exp`")
 
+    # optimizer config
     parser.add_argument("--optimizer_type", type=str, default="Lion", choices=["Adam", "AdamW", "Lion", "SGDNesterov", "DAdaptation", "Adafactor"], help="Optimizer for training. Literally `Adam`, `AdamW`, `Lion`, `SGDNesterov`, `DAdaptation` or `Adafactor`. Default `Lion`")
     parser.add_argument("--optimizer_kwargs", type=str, default=None, nargs="+", help="Key arguments for optimizer. e.g. `betas=(0.9, 0.99) weight_decay=0.0 use_triton=False decoupled_weight_decay=False` for optimizer Lion by default")
     
@@ -284,32 +307,34 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr_scheduler_num_cycles", type=float, default=0.5, help="Number of cycles (for cosine scheduler) or factor in polynomial scheduler. Default 0.5")
     parser.add_argument("--lr_scheduler_power", type=float, default=1.0, help="Power factor for polynomial learning rate scheduler. Default 1.0")
     
+    # loss configs
     parser.add_argument("--gamma", type=float, default=1, help="Gamma for KL Div in Objective Function Loss. Default 1")
     parser.add_argument("--scale", type=float, default=100, help="Scale for MSE Loss. Default 100")
     
-    parser.add_argument("--grad_clip", type=float, default=None, help="Value of gradient clipping")
-    parser.add_argument("--detect_anomaly", type=str2bool, default=False, help="Debug option. When enabled, PyTorch detects unusual operations (such as NaN or inf values) in the computation graph and throws exceptions to help locate the source of the problem. But it will greatly reduce the training performance. Default False")
-    
+    # train configs
     parser.add_argument("--max_epoches", type=int, default=20, help="Max Epoches for train loop")
-    parser.add_argument("--sample_per_batch", type=int, default=0, help="Check X, y and all kinds of outputs per n batches in one epoch. Specify 0 to unable. Default 0")
-    parser.add_argument("--report_per_epoch", type=int, default=1, help="Report train loss and validation loss per n epoches. Specify 0 to unable. Default 1")
-    
+    parser.add_argument("--grad_clip", type=float, default=-1, help="Value of gradient clipping. Specify -1 to disable. Default -1")
+    parser.add_argument("--detect_anomaly", type=str2bool, default=False, help="Debug option. When enabled, PyTorch detects unusual operations (such as NaN or inf values) in the computation graph and throws exceptions to help locate the source of the problem. But it will greatly reduce the training performance. Default False")
     parser.add_argument("--dtype", type=str, default="FP32", choices=["FP32", "FP64", "FP16", "BF16"], help="Dtype of data and weight tensor. Literally `FP32`, `FP64`, `FP16` or `BF16`. Default `FP32`")
     parser.add_argument("--device", type=str, default="cuda", choices=["auto", "cuda", "cpu"], help="Device to take calculation. Literally `cpu` or `cuda`. Default `cuda`")
-
-    parser.add_argument("--save_per_epoch", type=int, default=1, help="Save model weights per n epoches. Specify 0 to unable. Default 1")
+    parser.add_argument("--sample_per_batch", type=int, default=0, help="Check X, y and all kinds of outputs per n batches in one epoch. Specify 0 to disable. Default 0")
+    parser.add_argument("--report_per_epoch", type=int, default=1, help="Report train loss and validation loss per n epoches. Specify 0 to disable. Default 1")
+    parser.add_argument("--save_per_epoch", type=int, default=1, help="Save model weights per n epoches. Specify 0 to disable. Default 1")
     parser.add_argument("--save_folder", type=str, required=True, help="Folder to save model")
     parser.add_argument("--save_name", type=str, default="Model", help="Model name. Default `Model`")
     parser.add_argument("--save_format", type=str, default=".pt", help="File format of model to save, literally `.pt` or `.safetensors`. Default `.pt`")
 
     return parser
 
-
 if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
     if args.config_file:
         args = read_config(args.config_file, parser=parser)
+
+    os.makedirs(args.log_folder, exist_ok=True)
+    os.makedirs(args.save_folder, exist_ok=True)
+    
     if args.output_config:
         save_config(args, args.output_config)
     else:
