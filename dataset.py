@@ -296,7 +296,6 @@ if __name__ == "__main__":
 
     torch.save({"train": train_set, "val": val_set, "test": test_set}, args.save_path)
     logging.debug(f"Dataset saved to {args.save_path}")
-    print(train_set[0][1].shape)
 
 # python dataset.py --x_folder "D:\PycharmProjects\SWHY\data\preprocess\alpha" --y_folder "D:\PycharmProjects\SWHY\data\preprocess\label" --label_name "ret10" --train_seq_len 20 --save_path "D:\PycharmProjects\SWHY\data\preprocess\dataset.pt"
 

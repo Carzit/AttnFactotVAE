@@ -102,6 +102,8 @@ class FactorVAETrainer:
             self.model.load_state_dict(torch.load(model_path))
         elif model_path.endswith(".safetensors"):
             self.model.load_state_dict(load_file(model_path))
+        else:
+            pass
 
     def set_configs(self,
                     max_epoches:int,
@@ -278,9 +280,9 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vae_learning_rate", type=float, default=1e-3, help="Learning rate for optimizer of AttnFactorVAE. Default 0.001")
     parser.add_argument("--predictor_learning_rate", type=float, default=1e-3, help="Learning rate for optimizer of AttnFactorVAE. Default 0.001")
     parser.add_argument("--lr_scheduler_type", type=str, default="constant", choices=["constant", "linear", "cosine", "cosine_with_restarts", "polynomial", "adafactor"], help="Learning rate scheduler for optimizer. Literally `constant`, `linear`, `cosine`, `cosine_with_restarts`, `polynomial`, `adafactor`. Default `constant`.")
-    parser.add_argument("--lr_scheduler_warmup_steps", type=int, default=0, help="Number of steps for the warmup phase in the learning rate scheduler.")
-    parser.add_argument("--lr_scheduler_num_cycles", type=float, default=0.5, help="Number of cycles (for cosine scheduler) or factor in polynomial scheduler.")
-    parser.add_argument("--lr_scheduler_power", type=float, default=1.0, help="Power factor for polynomial learning rate scheduler.")
+    parser.add_argument("--lr_scheduler_warmup_steps", type=int, default=0, help="Number of steps for the warmup phase in the learning rate scheduler. Default 0")
+    parser.add_argument("--lr_scheduler_num_cycles", type=float, default=0.5, help="Number of cycles (for cosine scheduler) or factor in polynomial scheduler. Default 0.5")
+    parser.add_argument("--lr_scheduler_power", type=float, default=1.0, help="Power factor for polynomial learning rate scheduler. Default 1.0")
     
     parser.add_argument("--gamma", type=float, default=1, help="Gamma for KL Div in Objective Function Loss. Default 1")
     parser.add_argument("--scale", type=float, default=100, help="Scale for MSE Loss. Default 100")
