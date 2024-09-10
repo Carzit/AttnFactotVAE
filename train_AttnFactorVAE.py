@@ -185,7 +185,7 @@ class FactorVAETrainer:
                                                       sigma_posterior)
                 train_loss = train_vae_loss + train_pred_loss
                 train_loss.backward() # 梯度反向传播
-                if self.grad_clip:
+                if self.grad_clip and self.grad_clip > 0:
                     torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=self.grad_clip)
                 vae_optimizer.step()
                 predictor_optimizer.step()
@@ -234,7 +234,7 @@ class FactorVAETrainer:
                 val_loss_epoch = sum(val_loss_list) / len(val_loss_list)  
                 writer.add_scalar("Validation Loss", val_loss_epoch, epoch+1)
                 writer.add_scalars("Train-Val Loss", {"Train Loss": train_loss_epoch, "Validation Loss": val_loss_epoch}, epoch+1)
-                writer.add_scalars("Loss", {"Train": sum(train_recon_loss_list)/len(train_recon_loss_list), "Val": sum(val_recon_loss_list)/len(val_recon_loss_list)}, epoch+1)
+                writer.add_scalars("Loss", {"Train": sum(train_loss_list)/len(train_loss_list), "Val": sum(val_loss_list)/len(val_loss_list)}, epoch+1)
                 writer.add_scalars("Reconstruct Loss", {"Train": sum(train_recon_loss_list)/len(train_recon_loss_list), "Val": sum(val_recon_loss_list)/len(val_recon_loss_list)}, epoch+1)
                 writer.add_scalars("KLD Loss", {"Train": sum(train_kld_loss_list)/len(train_kld_loss_list), "Val": sum(val_kld_loss_list)/len(val_kld_loss_list)}, epoch+1)
                 writer.add_scalars("Predictor Loss", {"Train": sum(train_pred_loss_list)/len(train_pred_loss_list), "Val": sum(val_pred_loss_list)/len(val_pred_loss_list)}, epoch+1)
