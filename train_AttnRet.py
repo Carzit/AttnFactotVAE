@@ -16,7 +16,7 @@ from torch.utils.data import Dataset, DataLoader, Sampler
 from torch.utils.tensorboard.writer import SummaryWriter
 
 from dataset import StockDataset, StockSequenceDataset, RandomSampleSampler
-from nets import AttnRet
+from nets import AttnRet, AttnFactorVAE
 from loss import MSE_Loss
 from utils import str2bool, str2dtype, str2device, get_optimizer, get_lr_scheduler, read_config, save_config
 
@@ -315,6 +315,16 @@ if __name__ == "__main__":
                           gru_hidden_size=args.gru_hidden_size, 
                           gru_drop_out=args.gru_dropout,
                           num_fc_layers=args.num_fc_layers)
+    
+    pretrained_attnvae = AttnFactorVAE(quantity_price_feature_size=101,
+                                        fundamental_feature_size=31,
+                                        num_gru_layers=4,
+                                        gru_hidden_size=32,
+                                        hidden_size=100,
+                                        latent_size=48)
+    pretrained_attnvae.load_state_dict(torch.load(r"C:\Users\21863\Desktop\temp\AttnFactorVAE_test2_epoch40.pt"))
+    feature_extractor_state_dict = {k.removeprefix("feature_extractor."): v for k, v in pretrained_attnvae.state_dict().items() if k.startswith("feature_extractor")}
+    model.feature_extractor.load_state_dict(feature_extractor_state_dict)
     
     loss_func = MSE_Loss(scale=args.scale)
 
