@@ -20,26 +20,23 @@ from matplotlib import pyplot as plt
 import plotly.graph_objs as go
 
 from dataset import StockDataset, StockSequenceDataset
-from nets import AttnFactorVAE
+from nets import AttnRet
 from loss import ObjectiveLoss, MSE_Loss, KL_Div_Loss, PearsonCorr, SpearmanCorr
 from utils import str2bool
 
 
 class FactorVAEEvaluator:
     def __init__(self,
-                 model:AttnFactorVAE,
+                 model:AttnRet,
                  device:torch.device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")) -> None:
         
-        self.model:AttnFactorVAE = model # FactorVAE 模型实例
+        self.model:AttnRet = model # FactorVAE 模型实例
         self.test_loader:DataLoader
         
         self.pred_eval_func:Union[nn.Module, Callable]
-        self.latent_eval_func:Union[nn.Module, Callable] = KL_Div_Loss()
         self.pred_scores:List[float] = []
-        self.latent_scores:List[float] = []
-        
+
         self.y_true_list:List[torch.Tensor] = []
-        self.y_hat_list:List[torch.Tensor] = []
         self.y_pred_list:List[torch.Tensor] = []
         
         self.log_folder:str = "log"
@@ -68,7 +65,7 @@ class FactorVAEEvaluator:
         if ic_std == 0:
             return float('inf') if ic_mean != 0 else 0
         
-        icir = (ic_mean / ic_std) #* np.sqrt(n)
+        icir = ic_mean / ic_std
         return icir
     
     def eval(self, metric:Literal["MSE", "IC", "Rank_IC", "ICIR", "Rank_ICIR"]="IC"):
@@ -89,36 +86,25 @@ class FactorVAEEvaluator:
                 quantity_price_feature = quantity_price_feature.to(device=self.device)
                 fundamental_feature = fundamental_feature.to(device=self.device)
                 label = label.to(device=self.device)
-                y_pred, mu_posterior, sigma_posterior, mu_prior, sigma_prior = model(fundamental_feature, 
-                                                                                     quantity_price_feature, 
-                                                                                     label)
-                y_hat, mu_prior, sigma_prior  = model.predict(fundamental_feature, 
-                                                              quantity_price_feature,)
-                pred_score = self.pred_eval_func(y_hat, label)
-                latent_score = self.latent_eval_func(mu_prior, sigma_prior)
+                y_pred = model(fundamental_feature, quantity_price_feature)
+                pred_score = self.pred_eval_func(y_pred, label)
                 
                 self.pred_scores.append(pred_score.item())
-                self.latent_scores.append(latent_score.item())
                 
                 self.y_true_list.append(label)
-                self.y_hat_list.append(y_hat)
                 self.y_pred_list.append(y_pred)
         if metric == "MSE" or metric == "IC" or metric == "Rank_IC":
             y_pred_score = sum(self.pred_scores) / len(self.pred_scores)
         elif metric == "ICIR" or metric == "Rank_ICIR":
             y_pred_score = self.calculate_icir(self.pred_scores)
-        latent_kl_div = sum(self.latent_scores) / len(self.latent_scores)
         logging.info(f"y pred score: {y_pred_score}")
-        logging.info(f"latent kl divergence: {latent_kl_div}")
     
     def visualize(self, idx:int=0, save_folder:Optional[str]=None):
         if save_folder is not None:
             self.save_folder = save_folder
-        self.plotter.plot_score(self.pred_scores, 
-                                self.latent_scores)
+        self.plotter.plot_score(self.pred_scores)
         self.plotter.save_fig(os.path.join(self.save_folder, "Scores"))
         self.plotter.plot_pred_sample(self.y_true_list, 
-                                      self.y_hat_list, 
                                       self.y_pred_list,
                                       idx=idx)
         self.plotter.save_fig(os.path.join(self.save_folder, f"Trace {idx}"))
@@ -127,28 +113,25 @@ class Plotter:
     def __init__(self) -> None:
         pass
     
-    def plot_score(self, pred_scores, latent_scores):
+    def plot_score(self, pred_scores):
         plt.figure(figsize=(10, 6))
         plt.plot(pred_scores, label='pred scores', marker='', color="b")
-        plt.plot(latent_scores, label='latent scores', marker='', color="r")
 
         plt.legend()
         plt.title('Evaluation Scores')
         plt.xlabel('Index')
         plt.ylabel('Value')
     
-    def plot_pred_sample(self, y_true_list, y_hat_list, y_pred_list, idx=0):
+    def plot_pred_sample(self, y_true_list, y_pred_list, idx=0):
         y_true_list = [y_true[idx].item() for y_true in y_true_list]
-        y_hat_list = [y_hat[idx].item() for y_hat in y_hat_list]
         y_pred_list = [y_pred[idx].item() for y_pred in y_pred_list]
 
         plt.figure(figsize=(10, 6))
         plt.plot(y_true_list, label='y true', marker='', color="g")
-        plt.plot(y_hat_list, label='y rec', marker='', color="b")
         plt.plot(y_pred_list, label='y pred', marker='', color="r")
 
         plt.legend()
-        plt.title('Comparison of y_true, y_hat, and y_pred')
+        plt.title('Comparison of y_true and y_pred')
         plt.xlabel('Index')
         plt.ylabel('Value')
 
@@ -170,9 +153,8 @@ def parse_args():
     parser.add_argument("--fundamental_feature_size", type=int, required=True, help="Input size of fundamental feature")
     parser.add_argument("--num_gru_layers", type=int, required=True, help="Num of GRU layers in feature extractor.")
     parser.add_argument("--gru_hidden_size", type=int, required=True, help="Hidden size of each GRU layer. num_gru_layers * gru_hidden_size i.e. the input size of FactorEncoder and Factor Predictor.")
-    parser.add_argument("--hidden_size", type=int, required=True, help="Hidden size of FactorVAE(Encoder, Pedictor and Decoder), i.e. num of portfolios.")
-    parser.add_argument("--latent_size", type=int, required=True, help="Latent size of FactorVAE(Encoder, Pedictor and Decoder), i.e. num of factors.")
-    parser.add_argument("--std_activation", type=str, default="exp", help="Activation function for standard deviation calculation, literally `exp` or `softplus`. Default `exp`")
+    parser.add_argument("--num_fc_layers", type=int, required=True, help="Num of full connected layers in MLP")
+
     
     parser.add_argument("--num_workers", type=int, default=4, help="Num of subprocesses to use for data loading. 0 means that the data will be loaded in the main process. Default 4")
     parser.add_argument("--metric", type=str, default="IC", help="Eval metric type, literally `MSE`, `IC`, `Rank_IC`, `ICIR` or `Rank_ICIR`. Default `IC`. ")
@@ -204,14 +186,13 @@ if __name__ == "__main__":
     datasets:Dict[str, StockSequenceDataset] = torch.load(args.dataset_path)
     test_set = datasets[args.subset]
 
-    model = AttnFactorVAE(fundamental_feature_size=args.fundamental_feature_size, 
+    model = AttnRet(fundamental_feature_size=args.fundamental_feature_size, 
                           quantity_price_feature_size=args.quantity_price_feature_size,
                           num_gru_layers=args.num_gru_layers, 
                           gru_hidden_size=args.gru_hidden_size, 
-                          hidden_size=args.hidden_size, 
-                          latent_size=args.latent_size,
                           gru_drop_out=0,
-                          std_activ=args.std_activation)
+                          num_fc_layers=args.num_fc_layers
+                          )
     
     evaluator = FactorVAEEvaluator(model=model)
     evaluator.load_checkpoint(args.checkpoint_path)
