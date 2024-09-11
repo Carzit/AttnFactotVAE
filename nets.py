@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from typing import Literal
-from utils import check, multiLinear
+from utils import multiLinear
 
 class Exp(nn.Module):
     def __init__(self, *args, **kwargs) -> None:
@@ -38,18 +38,38 @@ class AttnFeatureExtractor(nn.Module):
         fundamental_features = self.norm_layer2(fundamental_features)
         q = self.q_layer(fundamental_features)
         k = self.k_layer(fundamental_features)
-        #print(f"q: {check(q)}, k: {check(k)}")
 
         quantity_price_features = self.norm_layer1(quantity_price_features)
         quantity_price_features = self.proj_layer(quantity_price_features)
         output, hidden_state = self.gru(quantity_price_features)
-        #print(f"o: {check(output)}")
         v = self.v_layer(output[-1]) # -> (batch_size, hidden_size)
         qk = torch.matmul(q, k.T)
         attn = torch.matmul(qk, v)
         residual = attn + v
-        #print(f"residual: {residual}")
         return residual # -> (batch_size, hidden_size)
+
+class FeatureExtractor(nn.Module):
+    def __init__(self, 
+                 quantity_price_feature_size,
+                 hidden_size, 
+                 num_gru_layer=1,
+                 gru_dropout=0) -> None:
+        super().__init__()
+        self.norm_layer = nn.LayerNorm(quantity_price_feature_size)
+        self.proj_layer = nn.Sequential(nn.Linear(quantity_price_feature_size, hidden_size), 
+                                        nn.LeakyReLU())
+        self.gru = nn.GRU(input_size=hidden_size,
+                          hidden_size=hidden_size,
+                          batch_first=False,
+                          num_layers=num_gru_layer,
+                          dropout=gru_dropout)
+        
+    def forward(self, quantity_price_features):
+        quantity_price_features = self.norm_layer(quantity_price_features)
+        quantity_price_features = self.proj_layer(quantity_price_features)
+        output, hidden_state = self.gru(quantity_price_features)
+        return output[-1]  # -> (batch_size, hidden_size)
+
 
 class AttnRet(nn.Module):
     def __init__(self, 
@@ -233,16 +253,16 @@ class SingleHeadAttention(nn.Module):
         self.epsilon = 1e-6
 
     def forward(self, e):# e: [num_stocks, input_size(features)]
-        k = self.w_key(e)  # -> (N, H)
-        v = self.w_value(e)  # -> (N, H)
+        k = self.w_key(e)  # -> [num_stocks, hidden_size]
+        v = self.w_value(e)  # -> [num_stocks, hidden_size]
         
-        q_norm = self.q / self.q.norm(dim=-1, keepdim=True)  # -> (H)
-        k_norm = k / k.norm(dim=-1, keepdim=True)  # -> (N, H)
+        q_norm = self.q / self.q.norm(dim=-1, keepdim=True)  # -> [hidden_size]
+        k_norm = k / k.norm(dim=-1, keepdim=True)  # -> [num_stocks, hidden_size]
         
-        attn_scores = F.relu(torch.matmul(q_norm, k_norm.transpose(-1,-2))) # (N)
-        attn_weights = attn_scores / (attn_scores.sum(dim=-1, keepdim=True) + self.epsilon)   # (N)
+        attn_scores = F.relu(torch.matmul(q_norm, k_norm.transpose(-1,-2))) # -> [num_stocks]
+        attn_weights = attn_scores / (attn_scores.sum(dim=-1, keepdim=True) + self.epsilon)   # -> [num_stocks]
         
-        h_att = torch.matmul(attn_weights, v)  # (H)
+        h_att = torch.matmul(attn_weights, v)  # -> [hidden_size]
         return h_att
 
 class MultiHeadAttention(nn.Module):
@@ -267,7 +287,7 @@ class MultiHeadAttention(nn.Module):
         
     def forward(self, e):
         head_outputs = [head(e) for head in self.heads]
-        h_muti = torch.stack(head_outputs, dim=-2)
+        h_muti = torch.stack(head_outputs, dim=-2) # -> [num_heads, hidden_size]
         return h_muti #->(K, H)
     
 class DistributionNetwork(nn.Module):
@@ -288,7 +308,7 @@ class DistributionNetwork(nn.Module):
             self.sigma_layer = nn.Sequential(nn.Linear(hidden_size, 1),
                                              nn.Softplus())
     
-    def forward(self, h_multi):#h_multi: [num_factors, hidden_size]
+    def forward(self, h_multi):#h_multi: [num_factors(=num_heads), hidden_size]
         mu_prior = self.mu_layer(h_multi).squeeze() #->[num_factors]
         sigma_prior = self.sigma_layer(h_multi).squeeze() #->[num_factors]
         return mu_prior, sigma_prior
@@ -311,16 +331,58 @@ class FactorPredictor(nn.Module):
 
     def forward(self, e):
         h_multi = self.multihead_attention(e)
-        #print(f"h_mul:{check(h_multi), h_multi}")
         mu_prior, sigma_prior = self.distribution_network(h_multi)
         return mu_prior, sigma_prior
-    
-class AttnFactorVAE(nn.Module):
+
+class FactorVAE(nn.Module):
     """
     Pytorch Implementation of FactorVAE: A Probabilistic Dynamic Factor Model Based on Variational Autoencoder for Predicting Cross-Sectional Stock Returns (https://ojs.aaai.org/index.php/AAAI/article/view/20369)
 
     Our model follows the encoder-decoder architecture of VAE, to learn an optimal factor model, which can reconstruct the cross-sectional stock returns by several factors well. As shown in Figure 3, with access to future stock returns, the encoder plays a role as an oracle, which can extract optimal factors from future data, called posterior factors, and then the decoder reconstructs future stock returns by the posterior factors. Specially, the factors in our model are regarded as the latent variables in VAE, with the capacity of modeling noisy data. 
     Concretely, this architecture contains three components: feature extractor, factor encoder and factor decoder.
+    """
+    def __init__(self, 
+                 quantity_price_feature_size,
+                 num_gru_layers, 
+                 gru_hidden_size,
+                 hidden_size,
+                 latent_size,
+                 gru_drop_out = 0.1, 
+                 std_activ:Literal["exp", "softplus"] = "exp") -> None:
+        super().__init__()
+        self.feature_extractor = FeatureExtractor(quantity_price_feature_size=quantity_price_feature_size,
+                                                  hidden_size=gru_hidden_size,
+                                                  num_gru_layer=num_gru_layers,
+                                                  gru_dropout=gru_drop_out)
+        self.encoder = FactorEncoder(input_size=gru_hidden_size, 
+                                     hidden_size=hidden_size,
+                                     latent_size=latent_size,
+                                     std_activ=std_activ)
+        self.predictor = FactorPredictor(input_size=gru_hidden_size,
+                                         hidden_size=hidden_size,
+                                         latent_size=latent_size,
+                                         std_activ=std_activ)
+        self.decoder = FactorDecoder(input_size=gru_hidden_size,
+                                     hidden_size=hidden_size,
+                                     latent_size=latent_size,
+                                     std_activ=std_activ)
+    def forward(self, quantity_price_feature, y):
+        e = self.feature_extractor(quantity_price_feature)
+        mu_posterior, sigma_posterior = self.encoder(y, e)
+        mu_prior, sigma_prior = self.predictor(e)
+        y_hat = self.decoder(e, mu_posterior, sigma_posterior)
+        return y_hat, mu_posterior, sigma_posterior, mu_prior, sigma_prior
+    
+    def predict(self, quantity_price_feature):
+        e = self.feature_extractor(quantity_price_feature)
+        mu_prior, sigma_prior = self.predictor(e)
+        y_pred = self.decoder(e, mu_prior, sigma_prior)
+        return y_pred, mu_prior, sigma_prior    
+
+
+class AttnFactorVAE(nn.Module):
+    """
+    Pytorch Implementation of AttnFactorVAE, which is a combination of RiskAttention and FactorVAE.
     """
     def __init__(self, 
                  fundamental_feature_size, 
@@ -351,13 +413,9 @@ class AttnFactorVAE(nn.Module):
                                      std_activ=std_activ)
     def forward(self, fundamental_feature, quantity_price_feature, y):
         e = self.feature_extractor(fundamental_feature, quantity_price_feature)
-        #print(f"e: {e}")
         mu_posterior, sigma_posterior = self.encoder(y, e)
-        #print(f"mu_posterior:{mu_posterior}, sigma_posterior:{sigma_posterior}")
         mu_prior, sigma_prior = self.predictor(e)
-        #print(f"mu_prior:{mu_prior}, sigma_prior:{sigma_prior}")
         y_hat = self.decoder(e, mu_posterior, sigma_posterior)
-        #print(f"y_hat: {y_hat}")
         return y_hat, mu_posterior, sigma_posterior, mu_prior, sigma_prior
     
     def predict(self, fundamental_feature, quantity_price_feature):

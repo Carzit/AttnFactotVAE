@@ -16,24 +16,31 @@ from torch.utils.data import Dataset, DataLoader, Sampler
 from torch.utils.tensorboard.writer import SummaryWriter
 
 from dataset import StockDataset, StockSequenceDataset, RandomSampleSampler
-from nets import FactorVAE
-from loss import ObjectiveLoss
-from utils import str2bool, str2dtype, str2device
+from nets import FactorVAE, AttnFactorVAE
+from loss import ObjectiveLoss, Pred_Loss
+from utils import str2bool, str2dtype, str2device, get_optimizer, get_lr_scheduler, read_config, save_config
 
 class FactorVAETrainer:
     """FactorVAE Trainer，用于训练和评估一个基于因子变分自编码器（FactorVAE）的模型"""
     def __init__(self,
                  model:FactorVAE,
-                 loss_func:ObjectiveLoss = None,
-                 optimizer:torch.optim.Optimizer = None,
-                 lr_scheduler:Optional[torch.optim.lr_scheduler.LRScheduler] = None,
+                 vae_loss_func:nn.Module = None,
+                 predictor_loss_func:nn.Module = None,
+                 vae_optimizer:torch.optim.Optimizer = None,
+                 predictor_optimizer:torch.optim.Optimizer = None,
+                 vae_lr_scheduler:torch.optim.lr_scheduler.LRScheduler = None,
+                 predictor_lr_scheduler:torch.optim.lr_scheduler.LRScheduler = None,
                  dtype:torch.dtype = torch.float32,
                  device:torch.device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")) -> None:
         
-        self.model:FactorVAE = model # FactorVAE 模型实例
-        self.loss_func:nn.Module = loss_func # 损失函数实例
-        self.optimizer:nn.Module = optimizer # 优化器实例
-        self.lr_scheduler:Optional[torch.optim.lr_scheduler.LRScheduler] = lr_scheduler # 学习率调度器实例
+        self.model: FactorVAE = model
+        self.vae_loss_func: nn.Module = vae_loss_func
+        self.predictor_loss_func: nn.Module = predictor_loss_func
+        
+        self.vae_optimizer: nn.Module = vae_optimizer
+        self.predictor_optimizer: nn.Module = predictor_optimizer
+        self.vae_lr_scheduler: torch.optim.lr_scheduler.LRScheduler = vae_lr_scheduler
+        self.predictor_lr_scheduler: torch.optim.lr_scheduler.LRScheduler = predictor_lr_scheduler
 
         self.train_loader:DataLoader
         self.val_loader:DataLoader
@@ -95,9 +102,12 @@ class FactorVAETrainer:
             self.model.load_state_dict(torch.load(model_path))
         elif model_path.endswith(".safetensors"):
             self.model.load_state_dict(load_file(model_path))
+        else:
+            pass
 
     def set_configs(self,
                     max_epoches:int,
+                    grad_clip:float = None,
                     hparams:Optional[dict] = None,
                     log_folder:str = "log",
                     sample_per_batch:int = 0,
@@ -108,6 +118,7 @@ class FactorVAETrainer:
                     save_format:str=".pt"):
         # 配置设置
         self.max_epoches = max_epoches
+        self.grad_clip = grad_clip
         self.hparams = hparams
         
         self.log_folder = log_folder
@@ -131,35 +142,60 @@ class FactorVAETrainer:
     def train(self):
         writer = self.writer
         model = self.model.to(device=self.device, dtype=self.dtype)
-        loss_func = self.loss_func
-        optimizer = self.optimizer
+        vae_loss_func = self.vae_loss_func
+        predictor_loss_func = self.predictor_loss_func
+        vae_optimizer = self.vae_optimizer
+        predictor_optimizer = self.predictor_optimizer
 
         # 主训练循环
         for epoch in range(self.max_epoches):
             train_loss_list = []
             val_loss_list = []
+
+            train_recon_loss_list = []
+            val_recon_loss_list = []
+
+            train_kld_loss_list = []
+            val_kld_loss_list = []
+
+            train_pred_loss_list = []
+            val_pred_loss_list = []
             
-            # 每个epoch上的训练
             model.train()
-            for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.train_loader, desc=f"Epoch [{epoch}/{self.max_epoches}] Train")):
-                optimizer.zero_grad() # 梯度归零
+            for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.train_loader, desc=f"Epoch [{epoch+1}/{self.max_epoches}] Train")):    
                 if fundamental_feature.shape[0] <= 2:
                     continue
-
                 quantity_price_feature = quantity_price_feature.to(device=self.device)
                 label = label.to(device=self.device)
-
-                y_hat, mu_posterior, sigma_posterior, mu_prior, sigma_prior = model(quantity_price_feature, label) # 模型运算
-                train_loss, train_recon_loss, train_kld_loss = loss_func(label, y_hat, mu_prior, sigma_prior, mu_posterior, sigma_posterior) # 损失函数计算
                 
+                vae_optimizer.zero_grad()
+                predictor_optimizer.zero_grad()
+
+                y_hat, mu_posterior, sigma_posterior, mu_prior, sigma_prior = model(quantity_price_feature, label)
+                train_vae_loss, train_recon_loss, train_kld_loss= vae_loss_func(label, 
+                                                                        y_hat, 
+                                                                        mu_posterior, 
+                                                                        sigma_posterior)
+                train_pred_loss = predictor_loss_func(mu_prior, 
+                                                      sigma_prior, 
+                                                      mu_posterior, 
+                                                      sigma_posterior)
+                train_loss = train_vae_loss + train_pred_loss
                 train_loss.backward() # 梯度反向传播
-                optimizer.step() # 优化器更新模型权重
-                train_loss_list.append(train_loss.item()) # 记录训练损失
+                if self.grad_clip and self.grad_clip > 0:
+                    torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=self.grad_clip)
+                vae_optimizer.step()
+                predictor_optimizer.step()
+                
+                train_loss_list.append(train_loss.item())
+                train_recon_loss_list.append(train_recon_loss.item())
+                train_kld_loss_list.append(train_kld_loss.item())
+                train_pred_loss_list.append(train_pred_loss.item())
                 
                 # 训练时抽样检查
                 if self.sample_per_batch:
                     if (batch+1) % self.sample_per_batch == 0:
-                        logging.debug(f"<Batch {batch+1}>  loss:{train_loss.item()} recon:{train_recon_loss.item()} kld:{train_kld_loss.item()}")
+                        logging.debug(f"<Batch {batch+1}>  loss:{train_loss.item()} recon:{train_recon_loss.item()} kld:{train_kld_loss.item()} preloss: {train_pred_loss.item()}")
                         logging.debug(f"<Batch {batch+1}>  y_hat:{y_hat} mu_prior:{mu_prior} sigma_prior:{sigma_prior} mu_posterior:{mu_posterior} sigma_posterior:{sigma_posterior}")
               
             # Tensorboard写入当前完成epoch的训练损失
@@ -169,27 +205,45 @@ class FactorVAETrainer:
             # 交叉验证集上验证（无梯度）
             model.eval() # 设置为eval模式以冻结dropout
             with torch.no_grad(): 
-                for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.val_loader, desc=f"Epoch [{epoch}/{self.max_epoches}] Val")):
-                    if fundamental_feature.shape[0] == 0:
+                for batch, (quantity_price_feature, fundamental_feature, label) in enumerate(tqdm(self.val_loader, desc=f"Epoch [{epoch+1}/{self.max_epoches}] Val")):
+                    if fundamental_feature.shape[0] <= 2:
                         continue
                     quantity_price_feature = quantity_price_feature.to(device=self.device)
                     label = label.to(device=self.device)
-                    y_hat, mu_posterior, sigma_posterior, mu_prior, sigma_prior = model(quantity_price_feature, label)
-                    val_loss, *_ = loss_func(label, y_hat, mu_prior, sigma_prior, mu_posterior, sigma_posterior)
+                    y_hat, mu_posterior, sigma_posterior, mu_prior, sigma_prior = model(quantity_price_feature, 
+                                                                                        label)
+                    val_vae_loss, val_recon_loss, val_kld_loss= vae_loss_func(label, 
+                                                                        y_hat, 
+                                                                        mu_posterior, 
+                                                                        sigma_posterior)
+                    val_pred_loss = predictor_loss_func(mu_prior, 
+                                                        sigma_prior, 
+                                                        mu_posterior, 
+                                                        sigma_posterior)
+                    val_loss = val_vae_loss + val_pred_loss
                     val_loss_list.append(val_loss.item())
+                    val_recon_loss_list.append(val_recon_loss.item())
+                    val_kld_loss_list.append(val_kld_loss.item())
+                    val_pred_loss_list.append(val_pred_loss.item())
 
                 val_loss_epoch = sum(val_loss_list) / len(val_loss_list)  
                 writer.add_scalar("Validation Loss", val_loss_epoch, epoch+1)
                 writer.add_scalars("Train-Val Loss", {"Train Loss": train_loss_epoch, "Validation Loss": val_loss_epoch}, epoch+1)
+                writer.add_scalars("Loss", {"Train": sum(train_loss_list)/len(train_loss_list), "Val": sum(val_loss_list)/len(val_loss_list)}, epoch+1)
+                writer.add_scalars("Reconstruct Loss", {"Train": sum(train_recon_loss_list)/len(train_recon_loss_list), "Val": sum(val_recon_loss_list)/len(val_recon_loss_list)}, epoch+1)
+                writer.add_scalars("KLD Loss", {"Train": sum(train_kld_loss_list)/len(train_kld_loss_list), "Val": sum(val_kld_loss_list)/len(val_kld_loss_list)}, epoch+1)
+                writer.add_scalars("Predictor Loss", {"Train": sum(train_pred_loss_list)/len(train_pred_loss_list), "Val": sum(val_pred_loss_list)/len(val_pred_loss_list)}, epoch+1)
+                
 
             # 如果有超参数字典传入，Tensorboard记录超参数
             if self.hparams:
                 writer.add_hparams(hparam_dict=self.hparams, metric_dict={"hparam/TrainLoss":train_loss_epoch, "hparam/ValLoss":val_loss_epoch})
 
             # 如果有学习率调度器传入，则更新之。
-            writer.add_scalar("Learning Rate", optimizer.param_groups[0]["lr"], epoch+1)
-            if self.lr_scheduler:
-                self.lr_scheduler.step()
+            writer.add_scalar("VAE Learning Rate", vae_optimizer.param_groups[0]["lr"], epoch+1)
+            writer.add_scalar("Predictor Learning Rate", predictor_optimizer.param_groups[0]["lr"], epoch+1)
+            self.vae_lr_scheduler.step()
+            self.predictor_lr_scheduler.step()
             
             # Tensorboard写入磁盘
             writer.flush()
@@ -211,17 +265,24 @@ class FactorVAETrainer:
         writer.close()
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="FactorVAE Training.")
+def get_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="AttnFactorVAE Training.")
+    
+    parser.add_argument("--config_file", type=str, default=None, help="Path of config file. Optional")
+    parser.add_argument("--output_config", type=str, default=None, help="Path of output config file. Default saved to save_folder as `config.toml`")
 
     parser.add_argument("--log_folder", type=str, default=os.curdir, help="Path of folder for log file. Default `.`")
     parser.add_argument("--log_name", type=str, default="log.txt", help="Name of log file. Default `log.txt`")
 
+    # dataloader config
     parser.add_argument("--dataset_path", type=str, required=True, help="Path of dataset .pt file")
+    parser.add_argument("--num_workers", type=int, default=4, help="Num of subprocesses to use for data loading. 0 means that the data will be loaded in the main process. Default 4")
+    parser.add_argument("--shuffle", type=str2bool, default=True, help="Whether to shuffle dataloader. Default True")
+    parser.add_argument("--num_batches_per_epoch", type=int, default=-1, help="Num of batches sampled from all batches to be trained per epoch. Note that sampler option is mutually exclusive with shuffle. Specify -1 to disable (use all batches). Default -1")
+    
+    # model config
     parser.add_argument("--checkpoint_path", type=str, default=None, help="Path of checkpoint. Optional")
-
     parser.add_argument("--quantity_price_feature_size", type=int, required=True, help="Input size of quantity-price feature")
-    parser.add_argument("--fundamental_feature_size", type=int, required=True, help="Input size of fundamental feature")
     parser.add_argument("--num_gru_layers", type=int, required=True, help="Num of GRU layers in feature extractor.")
     parser.add_argument("--gru_hidden_size", type=int, required=True, help="Hidden size of each GRU layer. num_gru_layers * gru_hidden_size i.e. the input size of FactorEncoder and Factor Predictor.")
     parser.add_argument("--hidden_size", type=int, required=True, help="Hidden size of FactorVAE(Encoder, Pedictor and Decoder), i.e. num of portfolios.")
@@ -229,35 +290,54 @@ def parse_args():
     parser.add_argument("--gru_dropout", type=float, default=0.1, help="Dropout probs in gru layers. Default 0.1")
     parser.add_argument("--std_activation", type=str, default="exp", choices=["exp", "softplus"], help="Activation function for standard deviation calculation, literally `exp` or `softplus`. Default `exp`")
 
-    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate for optimizer. Default 0.001")
+    # optimizer config
+    parser.add_argument("--optimizer_type", type=str, default="Lion", choices=["Adam", "AdamW", "Lion", "SGDNesterov", "DAdaptation", "Adafactor"], help="Optimizer for training. Literally `Adam`, `AdamW`, `Lion`, `SGDNesterov`, `DAdaptation` or `Adafactor`. Default `Lion`")
+    parser.add_argument("--optimizer_kwargs", type=str, default=None, nargs="+", help="Key arguments for optimizer. e.g. `betas=(0.9, 0.99) weight_decay=0.0 use_triton=False decoupled_weight_decay=False` for optimizer Lion by default")
+    
+    parser.add_argument("--vae_learning_rate", type=float, default=1e-3, help="Learning rate for optimizer of AttnFactorVAE. Default 0.001")
+    parser.add_argument("--predictor_learning_rate", type=float, default=1e-3, help="Learning rate for optimizer of AttnFactorVAE. Default 0.001")
+    parser.add_argument("--lr_scheduler_type", type=str, default="constant", choices=["constant", "linear", "cosine", "cosine_with_restarts", "polynomial", "adafactor"], help="Learning rate scheduler for optimizer. Literally `constant`, `linear`, `cosine`, `cosine_with_restarts`, `polynomial`, `adafactor`. Default `constant`.")
+    parser.add_argument("--lr_scheduler_warmup_steps", type=int, default=0, help="Number of steps for the warmup phase in the learning rate scheduler. Default 0")
+    parser.add_argument("--lr_scheduler_num_cycles", type=float, default=0.5, help="Number of cycles (for cosine scheduler) or factor in polynomial scheduler. Default 0.5")
+    parser.add_argument("--lr_scheduler_power", type=float, default=1.0, help="Power factor for polynomial learning rate scheduler. Default 1.0")
+    
+    # loss configs
     parser.add_argument("--gamma", type=float, default=1, help="Gamma for KL Div in Objective Function Loss. Default 1")
     parser.add_argument("--scale", type=float, default=100, help="Scale for MSE Loss. Default 100")
-
-    parser.add_argument("--num_workers", type=int, default=4, help="Num of subprocesses to use for data loading. 0 means that the data will be loaded in the main process. Default 4")
-    parser.add_argument("--shuffle", type=str2bool, default=True, help="Whether to shuffle dataloader. Default True")
-    parser.add_argument("--num_batches_per_epoch", type=int, default=-1, help="Num of batches sampled from all batches to be trained per epoch. Note that sampler option is mutually exclusive with shuffle. Specify -1 to disable (use all batches). Default -1")
     
+    # train configs
     parser.add_argument("--max_epoches", type=int, default=20, help="Max Epoches for train loop")
-    parser.add_argument("--sample_per_batch", type=int, default=0, help="Check X, y and all kinds of outputs per n batches in one epoch. Specify 0 to unable. Default 0")
-    parser.add_argument("--report_per_epoch", type=int, default=1, help="Report train loss and validation loss per n epoches. Specify 0 to unable. Default 1")
-    
-    parser.add_argument("--dtype", type=str2dtype, default="FP32", choices=["FP32", "FP64", "FP16", "BF16"], help="Dtype of data and weight tensor. Literally `FP32`, `FP64`, `FP16` or `BF16`. Default `FP32`")
-    parser.add_argument("--device", type=str2device, default="cuda", choices=["auto", "cuda", "cpu"], help="Device to take calculation. Literally `cpu` or `cuda`. Default `cuda`")
-
-    parser.add_argument("--save_per_epoch", type=int, default=1, help="Save model weights per n epoches. Specify 0 to unable. Default 1")
+    parser.add_argument("--grad_clip", type=float, default=-1, help="Value of gradient clipping. Specify -1 to disable. Default -1")
+    parser.add_argument("--detect_anomaly", type=str2bool, default=False, help="Debug option. When enabled, PyTorch detects unusual operations (such as NaN or inf values) in the computation graph and throws exceptions to help locate the source of the problem. But it will greatly reduce the training performance. Default False")
+    parser.add_argument("--dtype", type=str, default="FP32", choices=["FP32", "FP64", "FP16", "BF16"], help="Dtype of data and weight tensor. Literally `FP32`, `FP64`, `FP16` or `BF16`. Default `FP32`")
+    parser.add_argument("--device", type=str, default="cuda", choices=["auto", "cuda", "cpu"], help="Device to take calculation. Literally `cpu` or `cuda`. Default `cuda`")
+    parser.add_argument("--sample_per_batch", type=int, default=0, help="Check X, y and all kinds of outputs per n batches in one epoch. Specify 0 to disable. Default 0")
+    parser.add_argument("--report_per_epoch", type=int, default=1, help="Report train loss and validation loss per n epoches. Specify 0 to disable. Default 1")
+    parser.add_argument("--save_per_epoch", type=int, default=1, help="Save model weights per n epoches. Specify 0 to disable. Default 1")
     parser.add_argument("--save_folder", type=str, required=True, help="Folder to save model")
     parser.add_argument("--save_name", type=str, default="Model", help="Model name. Default `Model`")
     parser.add_argument("--save_format", type=str, default=".pt", help="File format of model to save, literally `.pt` or `.safetensors`. Default `.pt`")
 
-    return parser.parse_args()
-
+    return parser
 
 if __name__ == "__main__":
-    args = parse_args()
+    parser = get_parser()
+    args = parser.parse_args()
+    if args.config_file:
+        args = read_config(args.config_file, parser=parser)
+
+    os.makedirs(args.log_folder, exist_ok=True)
+    os.makedirs(args.save_folder, exist_ok=True)
+    
+    if args.output_config:
+        save_config(args, args.output_config)
+    else:
+        save_config(args, os.path.join(args.save_folder, "config.toml"))
 
     os.makedirs(args.log_folder, exist_ok=True)
     os.makedirs(args.save_folder, exist_ok=True)
     os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+    torch.autograd.set_detect_anomaly(args.detect_anomaly)
 
     logging.basicConfig(
         level=logging.DEBUG,
@@ -276,20 +356,44 @@ if __name__ == "__main__":
     else:
         train_sampler = None
 
-    model = FactorVAE(input_size=args.quantity_price_feature_size,
+    model = FactorVAE(quantity_price_feature_size=args.quantity_price_feature_size,
                       num_gru_layers=args.num_gru_layers, 
                       gru_hidden_size=args.gru_hidden_size, 
                       hidden_size=args.hidden_size, 
                       latent_size=args.latent_size,
                       gru_drop_out=args.gru_dropout,
                       std_activ=args.std_activation)
+    pretrained_attnvae = AttnFactorVAE(quantity_price_feature_size=101,
+                                        fundamental_feature_size=31,
+                                        num_gru_layers=4,
+                                        gru_hidden_size=32,
+                                        hidden_size=100,
+                                        latent_size=48)
+    pretrained_attnvae.load_state_dict(torch.load(r"C:\Users\21863\Desktop\temp\AttnFactorVAE_test2_epoch40.pt"))
+    encoder_state_dict = {k.removeprefix("encoder."): v for k, v in pretrained_attnvae.state_dict().items() if k.startswith("encoder.")}
+    decoder_state_dict = {k.removeprefix("decoder."): v for k, v in pretrained_attnvae.state_dict().items() if k.startswith("decoder.")}
+    predictor_state_dict = {k.removeprefix("predictor."): v for k, v in pretrained_attnvae.state_dict().items() if k.startswith("predictor.")}
+    model.encoder.load_state_dict(encoder_state_dict)
+    model.decoder.load_state_dict(decoder_state_dict)
+    model.predictor.load_state_dict(predictor_state_dict)
+    
+    vae_loss_func = ObjectiveLoss(scale=args.scale, gamma=args.gamma)
+    predictor_loss_func = Pred_Loss()
 
-    optimizer = torch.optim.Adam(model.parameters(), 
-                                 lr=args.lr)
-    loss_func = ObjectiveLoss(scale=args.scale, 
-                              gamma=args.gamma)
+    vae_optimizer = get_optimizer(args, 
+                                  trainable_params=list(model.feature_extractor.parameters())+list(model.encoder.parameters())+list(model.decoder.parameters()), 
+                                  lr=args.vae_learning_rate)
+    predictor_optimizer = get_optimizer(args, 
+                                        trainable_params=model.predictor.parameters(), 
+                                        lr=args.predictor_learning_rate)
+    vae_lr_scheduler = get_lr_scheduler(args, 
+                                        optimizer=vae_optimizer, 
+                                        lr=args.vae_learning_rate)
+    predictor_lr_scheduler = get_lr_scheduler(args, 
+                                              optimizer=predictor_optimizer, 
+                                              lr=args.predictor_learning_rate)
 
-    hparams = {"fundamental_feature_size": None, 
+    hparams = {"fundamental_feature_size":args.fundamental_feature_size, 
                "quantity_price_feature_size":args.quantity_price_feature_size,
                "num_gru_layers": args.num_gru_layers, 
                "gru_hidden_size": args.gru_hidden_size, 
@@ -298,16 +402,19 @@ if __name__ == "__main__":
                "gru_drop_out": args.gru_dropout,
                "std_activation":  args.std_activation,
                "checkpoint": args.checkpoint_path,
-               "lr": args.lr,
                "scale": args.scale,
                "gamma": args.gamma, 
                "num_batches_per_epoch": args.num_batches_per_epoch}
 
     trainer = FactorVAETrainer(model=model,
-                               loss_func=loss_func,
-                               optimizer=optimizer,
-                               dtype=args.dtype,
-                               device=args.device)
+                               vae_loss_func=vae_loss_func, 
+                               predictor_loss_func=predictor_loss_func, 
+                               vae_optimizer=vae_optimizer, 
+                               predictor_optimizer=predictor_optimizer, 
+                               vae_lr_scheduler=vae_lr_scheduler, 
+                               predictor_lr_scheduler=predictor_lr_scheduler,
+                               dtype=str2dtype(args.dtype),
+                               device=str2device(args.device))
     trainer.load_dataset(train_set=train_set, 
                          val_set=val_set, 
                          shuffle=args.shuffle, 
@@ -316,6 +423,7 @@ if __name__ == "__main__":
     if args.checkpoint_path is not None:
         trainer.load_checkpoint(args.checkpoint_path)
     trainer.set_configs(max_epoches=args.max_epoches,
+                        grad_clip=args.grad_clip,
                         log_folder=args.log_folder,
                         sample_per_batch=args.sample_per_batch,
                         report_per_epoch=args.report_per_epoch,
