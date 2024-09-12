@@ -3,7 +3,7 @@ numpy
 scipy
 tqdm
 
-pytorch
+torch
 tensorboard
 safetensors
 
